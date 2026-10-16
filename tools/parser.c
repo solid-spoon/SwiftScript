@@ -545,15 +545,28 @@ static Node *parse_pattern(P *p) {
     }
     if (check_op(p, "_")) { next_tok(p); return node_new(N_PAT_WILD, 1, 1); }
 
-    if (match_kw(p, "true"))  return lit_bool(1, 1, 1);
-    if (match_kw(p, "false")) return lit_bool(0, 1, 1);
-    if (match_kw(p, "nil"))   return lit_null(1, 1);
+    if (match_kw(p, "true")) {
+        Node *pat = node_new(N_PAT_LIT, 1, 1);
+        pat->boolean = 1; pat->is_bool = 1;
+        return pat;
+    }
+    if (match_kw(p, "false")) {
+        Node *pat = node_new(N_PAT_LIT, 1, 1);
+        pat->boolean = 0; pat->is_bool = 1;
+        return pat;
+    }
+    if (match_kw(p, "nil")) {
+        Node *pat = node_new(N_PAT_LIT, 1, 1);
+        pat->isnull = 1;
+        return pat;
+    }
 
     Node *e = parse_expr(p, 0, 0);
     if (e->kind == N_LIT) {
         Node *pat = node_new(N_PAT_LIT, e->line, e->col);
         pat->num = e->num; pat->boolean = e->boolean;
         pat->isnull = e->isnull; pat->sval = e->sval;
+        pat->is_bool = e->is_bool;
         return pat;
     }
     if (e->kind == N_BIN && e->op &&

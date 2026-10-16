@@ -8,24 +8,34 @@ static int _sw_counter = 0;
 static int _let_bind_counter = 0;
 
 typedef struct { char **items; int count, cap; } SS;
+
 static void ss_add(SS *s, const char *v) {
     for (int i = 0; i < s->count; i++) if (strcmp(s->items[i], v) == 0) return;
-    if (s->count == s->cap) { s->cap = s->cap ? s->cap*2 : 8; s->items = xrealloc(s->items, sizeof(char*)*s->cap); }
+    if (s->count == s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 8;
+        s->items = xrealloc(s->items, sizeof(char*) * s->cap);
+    }
     s->items[s->count++] = xstrdup(v);
 }
+
 static int ss_has(SS *s, const char *v) {
     if (!s) return 0;
     for (int i = 0; i < s->count; i++) if (strcmp(s->items[i], v) == 0) return 1;
     return 0;
 }
 
+static SS ss_clone(SS *src) {
+    SS c = {0};
+    for (int i = 0; i < src->count; i++) ss_add(&c, src->items[i]);
+    return c;
+}
+
 typedef struct {
     SS struct_names;
-    /* enumCases: (case_name → enum_name) */
     struct Pair { char *k; char *v; } *enum_cases;
     int enum_case_count, enum_case_cap;
     SS fields;
-    const char *self_prefix;   /* NULL | "_self" (struct) | "this" (class) */
+    const char *self_prefix;   /* NULL | "_self" | "this" */
     SS locals;
     SS break_stack;
     const char *switch_label;
@@ -33,13 +43,14 @@ typedef struct {
 
 static void enum_add(Ctx *c, const char *case_name, const char *enum_name) {
     if (c->enum_case_count == c->enum_case_cap) {
-        c->enum_case_cap = c->enum_case_cap ? c->enum_case_cap*2 : 8;
-        c->enum_cases = xrealloc(c->enum_cases, sizeof(*c->enum_cases)*c->enum_case_cap);
+        c->enum_case_cap = c->enum_case_cap ? c->enum_case_cap * 2 : 8;
+        c->enum_cases = xrealloc(c->enum_cases, sizeof(*c->enum_cases) * c->enum_case_cap);
     }
     c->enum_cases[c->enum_case_count].k = xstrdup(case_name);
     c->enum_cases[c->enum_case_count].v = xstrdup(enum_name);
     c->enum_case_count++;
 }
+
 static const char *enum_find(Ctx *c, const char *case_name) {
     for (int i = c->enum_case_count - 1; i >= 0; i--)
         if (strcmp(c->enum_cases[i].k, case_name) == 0) return c->enum_cases[i].v;
@@ -48,6 +59,10 @@ static const char *enum_find(Ctx *c, const char *case_name) {
 
 static Ctx ctx_copy(Ctx *src) {
     Ctx c = *src;
+    c.locals      = ss_clone(&src->locals);
+    c.break_stack = ss_clone(&src->break_stack);
+    c.fields      = ss_clone(&src->fields);
+    /* struct_names and enum_cases are read-only */
     return c;
 }
 
@@ -56,6 +71,19 @@ static char *gen_stmt(Node *n, Ctx *ctx);
 static char *gen_expr(Node *n, Ctx *ctx);
 static char *gen_import(Node *n);
 static char *gen_class(Node *n, Ctx *ctx);
+static char *gen_if_stmt(Node *n, Ctx *ctx);
+static char *gen_switch(Node *n, Ctx *ctx);
+static char *gen_struct(Node *n, Ctx *ctx);
+static char *gen_enum(Node *n, Ctx *ctx);
+static char *block_returning(List *stmts, Ctx *ctx);
+static char *gen_if_let_stmt(Node *n, Ctx *ctx);
+static char *gen_guard_stmt(Node *n, Ctx *ctx);
+static int   block_terminates(List *stmts);
+static char *gen_call(Node *n, Ctx *ctx);
+static char *gen_closure(Node *n, Ctx *ctx);
+static char *gen_template(Node *n, Ctx *ctx);
+static char *gen_if_expr(Node *n, Ctx *ctx);
+static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, char **bindings_out, int *bindings_count);
 
 static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
@@ -71,14 +99,6 @@ static void collect_decls(Node *prog, Ctx *ctx) {
 }
 
 /* ---------- stmt ---------- */
-static char *gen_if_stmt(Node *n, Ctx *ctx);
-static char *gen_switch(Node *n, Ctx *ctx);
-static char *gen_struct(Node *n, Ctx *ctx);
-static char *gen_enum(Node *n, Ctx *ctx);
-static char *block_returning(List *stmts, Ctx *ctx);
-static char *gen_if_let_stmt(Node *n, Ctx *ctx);
-static char *gen_guard_stmt(Node *n, Ctx *ctx);
-static int   block_terminates(List *stmts);
 
 static char *gen_stmt(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
@@ -87,7 +107,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     case N_LET: {
         const char *kw = (n->sval && strcmp(n->sval, "var") == 0) ? "let" : "const";
         char *v = n->a ? gen_expr(n->a, ctx) : xstrdup("undefined");
-        if (ctx->locals.items) ss_add(&ctx->locals, n->name);
+        ss_add(&ctx->locals, n->name);
         if (n->exported) sb_put(&sb, "export ");
         sb_printf(&sb, "%s %s = %s;", kw, n->name, v);
         free(v);
@@ -182,7 +202,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     }
     case N_BREAK: {
         const char *top = ctx->break_stack.count ?
-            ctx->break_stack.items[ctx->break_stack.count-1] : NULL;
+            ctx->break_stack.items[ctx->break_stack.count - 1] : NULL;
         if (top && strcmp(top, "switch") == 0)
             sb_printf(&sb, "break %s;", ctx->switch_label);
         else sb_put(&sb, "break;");
@@ -190,7 +210,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     }
     case N_CONTINUE: sb_put(&sb, "continue;"); break;
     default:
-        sb_printf(&sb, "/* ??? stmt kind=%d */", n->kind);
+        sb_printf(&sb, "/* unknown stmt kind=%d */", n->kind);
     }
     return sb_take(&sb);
 }
@@ -223,13 +243,9 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
 
     sb_put(&sb, "{\n");
 
-    /* _ok-флаг нужен только если есть else, чтобы блок else
-       выполнился ровно один раз и только если все биндинги
-       и условие провалились. */
     if (has_else)
         sb_printf(&sb, "  let _ok%d = false;\n", id);
 
-    /* Вложенные if: каждый биндинг — свой уровень. */
     for (int i = 0; i < count; i++) {
         Node *b = n->items->items[i];
         char *v = gen_expr(b->a, ctx);
@@ -239,11 +255,10 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
         sb_printf(&sb, "  if (_t%d_%d != null) {\n", id, i);
         sb_printf(&sb, "    %s %s = _t%d_%d;\n", kw, b->name, id, i);
 
-        if (ctx->locals.items) ss_add(&ctx->locals, b->name);
+        ss_add(&ctx->locals, b->name);
         free(v);
     }
 
-    /* Опциональное условие. */
     if (n->a) {
         char *c = gen_expr(n->a, ctx);
         sb_printf(&sb, "  if (%s) {\n", c);
@@ -252,7 +267,6 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
 
     if (has_else) sb_printf(&sb, "    _ok%d = true;\n", id);
 
-    /* Тело */
     if (n->b && n->b->kind == N_BLOCK) {
         for (int i = 0; i < n->b->stmts->count; i++) {
             char *s = gen_stmt(n->b->stmts->items[i], ctx);
@@ -261,11 +275,9 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
         }
     }
 
-    /* Закрываем вложенные if. */
     if (n->a) sb_put(&sb, "  }\n");
     for (int i = 0; i < count; i++) sb_put(&sb, "  }\n");
 
-    /* else */
     if (has_else) {
         sb_printf(&sb, "  if (!_ok%d) ", id);
         if (n->c->kind == N_IF) {
@@ -273,7 +285,6 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
             sb_printf(&sb, "%s\n", e);
             free(e);
         } else if (n->c->kind == N_IF_LET) {
-            /* else { ... } — обёртка блока уже внутри gen_if_let_stmt */
             char *e = gen_if_let_stmt(n->c, ctx);
             sb_printf(&sb, "%s\n", e);
             free(e);
@@ -325,7 +336,7 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
             Node *b = n->items->items[i];
             const char *kw = (b->sval && strcmp(b->sval, "var") == 0) ? "let" : "const";
             sb_printf(&sb, "%s %s = _g%d_%d;\n", kw, b->name, id, i);
-            if (ctx->locals.items) ss_add(&ctx->locals, b->name);
+            ss_add(&ctx->locals, b->name);
         }
     }
 
@@ -350,10 +361,28 @@ static int block_terminates(List *stmts) {
     case N_BREAK:
     case N_CONTINUE:
         return 1;
-    case N_EXPR_STMT:
-        if (last->a && last->a->kind == N_SWITCH) return 0;
-        if (last->a && last->a->kind == N_IF) return 0;
+    case N_EXPR_STMT: {
+        if (!last->a) return 0;
+        Node *e = last->a;
+        if (e->kind == N_IF) {
+            if (!e->c) return 0;
+            if (!e->b || e->b->kind != N_BLOCK) return 0;
+            if (!block_terminates(e->b->stmts)) return 0;
+            if (e->c->kind == N_IF) return 0;
+            if (e->c->kind != N_BLOCK) return 0;
+            return block_terminates(e->c->stmts);
+        }
+        if (e->kind == N_SWITCH) {
+            if (!e->body) return 0;
+            if (!block_terminates(e->body)) return 0;
+            for (int i = 0; i < e->cases->count; i++) {
+                Node *c = e->cases->items[i];
+                if (!block_terminates(c->body)) return 0;
+            }
+            return 1;
+        }
         return 0;
+    }
     default:
         return 0;
     }
@@ -388,7 +417,7 @@ static char *gen_import(Node *n) {
     } else if (strcmp(n->op, "default") == 0) {
         Node *spec = n->items->items[0];
         sb_put(&sb, spec->name);
-    } else { /* named */
+    } else {
         sb_put(&sb, "{ ");
         for (int i = 0; i < n->items->count; i++) {
             if (i) sb_put(&sb, ", ");
@@ -399,7 +428,6 @@ static char *gen_import(Node *n) {
         sb_put(&sb, " }");
     }
 
-    /* .sws -> .js */
     const char *path = n->name;
     size_t plen = strlen(path);
     StrBuf mod; sb_init(&mod);
@@ -422,6 +450,7 @@ static char *gen_import(Node *n) {
 }
 
 static char *gen_enum(Node *n, Ctx *ctx) {
+    (void)ctx;
     StrBuf sb; sb_init(&sb);
     if (n->exported) sb_put(&sb, "export ");
     sb_printf(&sb, "const %s = Object.freeze({\n", n->name);
@@ -429,9 +458,8 @@ static char *gen_enum(Node *n, Ctx *ctx) {
         Node *c = n->cases->items[i];
         if (c->params->count == 0) {
             sb_printf(&sb, "  %s: Object.freeze({ _case: \"%s\" }),\n",
-                        c->name, c->name);
+                     c->name, c->name);
         } else {
-            /* параметры _0, _1, ... */
             sb_printf(&sb, "  %s: (", c->name);
             for (int j = 0; j < c->params->count; j++) {
                 if (j) sb_put(&sb, ", ");
@@ -445,8 +473,6 @@ static char *gen_enum(Node *n, Ctx *ctx) {
     sb_put(&sb, "});");
     return sb_take(&sb);
 }
-
-static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, char **bindings_out, int *bindings_count);
 
 static char *gen_switch(Node *n, Ctx *ctx) {
     int my_sw = ++_sw_counter;
@@ -467,18 +493,37 @@ static char *gen_switch(Node *n, Ctx *ctx) {
         Node *c = n->cases->items[i];
         StrBuf conds; sb_init(&conds);
         StrBuf binds; sb_init(&binds);
+        SS bind_names = {0};
+
         for (int j = 0; j < c->patterns->count; j++) {
             char *bindings[64]; int bc = 0;
             char *cond = gen_pattern(c->patterns->items[j], subj, &sw, bindings, &bc);
             if (j) sb_put(&conds, " || ");
             sb_printf(&conds, "%s", cond);
             free(cond);
-            for (int k = 0; k < bc; k++) { sb_put(&binds, bindings[k]); sb_putc(&binds, ' '); free(bindings[k]); }
+            for (int k = 0; k < bc; k++) {
+                const char *ns = bindings[k];
+                if (strncmp(ns, "const ", 6) == 0) ns += 6;
+                const char *ne = ns;
+                while (*ne && *ne != ' ' && *ne != '=') ne++;
+                char namebuf[128];
+                size_t nlen = (size_t)(ne - ns);
+                if (nlen < sizeof(namebuf)) {
+                    memcpy(namebuf, ns, nlen);
+                    namebuf[nlen] = 0;
+                    if (!ss_has(&bind_names, namebuf)) {
+                        sb_put(&binds, bindings[k]);
+                        sb_putc(&binds, ' ');
+                        ss_add(&bind_names, namebuf);
+                    }
+                }
+                free(bindings[k]);
+            }
         }
         char *condstr = sb_take(&conds);
         char *bindstr = sb_take(&binds);
 
-        if (c->a) { /* guard */
+        if (c->a) {
             char *g = gen_expr(c->a, &sw);
             char *newcond = xmalloc(strlen(condstr) + strlen(bindstr) + strlen(g) + 128);
             sprintf(newcond, "(() => { if (!(%s)) return false; %s return (%s); })()",
@@ -488,15 +533,7 @@ static char *gen_switch(Node *n, Ctx *ctx) {
         }
 
         sb_printf(&sb, "  if (%s) {\n", condstr);
-        if (bindstr[0]) {
-            /* bindings added per-pattern — emit them again */
-            for (int j = 0; j < c->patterns->count; j++) {
-                char *b2[64]; int bc2 = 0;
-                char *cc = gen_pattern(c->patterns->items[j], subj, &sw, b2, &bc2);
-                free(cc);
-                for (int k = 0; k < bc2; k++) { sb_printf(&sb, "    %s\n", b2[k]); free(b2[k]); }
-            }
-        }
+        if (bindstr[0]) sb_printf(&sb, "    %s\n", bindstr);
         for (int j = 0; j < c->body->count; j++) {
             char *s = gen_stmt(c->body->items[j], &sw);
             sb_printf(&sb, "    %s\n", s);
@@ -546,8 +583,7 @@ static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, char **bindings, i
     case N_PAT_LIT: {
         if (p->isnull) sb_printf(&sb, "%s === null", subj);
         else if (p->sval) { char *j = xstrdup(p->sval); sb_printf(&sb, "%s === \"%s\"", subj, j); free(j); }
-        else if (p->boolean) sb_printf(&sb, "%s === true", subj);
-        else if (!p->boolean && p->num == 0 && !p->sval) sb_printf(&sb, "%s === false", subj);
+        else if (p->is_bool) sb_printf(&sb, "%s === %s", subj, p->boolean ? "true" : "false");
         else sb_printf(&sb, "%s === %.17g", subj, p->num);
         break;
     }
@@ -656,7 +692,8 @@ static char *gen_class(Node *n, Ctx *parent) {
             ss_add(&loc, ((Node*)m->params->items[j])->name);
         mctx.locals = loc;
 
-        const char *mname = (strcmp(m->name, "init") == 0) ? "constructor" : m->name;
+        int is_init = (strcmp(m->name, "init") == 0);
+        const char *mname = is_init ? "constructor" : m->name;
         sb_printf(&sb, "  %s(", mname);
         for (int j = 0; j < m->params->count; j++) {
             if (j) sb_put(&sb, ", ");
@@ -664,7 +701,7 @@ static char *gen_class(Node *n, Ctx *parent) {
         }
         sb_put(&sb, ") {\n");
 
-        if (strcmp(m->name, "init") == 0) {
+        if (is_init) {
             for (int fi = 0; fi < n->fields->count; fi++) {
                 Node *fld = n->fields->items[fi];
                 if (fld->a) {
@@ -676,9 +713,17 @@ static char *gen_class(Node *n, Ctx *parent) {
         }
 
         for (int j = 0; j < m->body->count; j++) {
-            char *s = gen_stmt(m->body->items[j], &mctx);
-            sb_printf(&sb, "    %s\n", s);
-            free(s);
+            Node *s = m->body->items[j];
+            int is_last = (j == m->body->count - 1);
+            if (is_last && s->kind == N_EXPR_STMT && !is_init) {
+                char *e = gen_expr(s->a, &mctx);
+                sb_printf(&sb, "    return %s;\n", e);
+                free(e);
+            } else {
+                char *c = gen_stmt(s, &mctx);
+                sb_printf(&sb, "    %s\n", c);
+                free(c);
+            }
         }
         sb_put(&sb, "  }\n");
     }
@@ -688,21 +733,16 @@ static char *gen_class(Node *n, Ctx *parent) {
 }
 
 /* ---------- expr ---------- */
-static char *gen_call(Node *n, Ctx *ctx);
-static char *gen_closure(Node *n, Ctx *ctx);
-static char *gen_template(Node *n, Ctx *ctx);
-static char *gen_if_expr(Node *n, Ctx *ctx);
 
 static char *gen_expr(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
     switch (n->kind) {
     case N_IF_LET:
     case N_GUARD_LET:
-    return xstrdup("undefined /* if-let/guard as expression not supported */");
+        return xstrdup("undefined /* if-let/guard as expression not supported */");
     case N_LIT:
         if (n->isnull) return xstrdup("null");
         if (n->sval) {
-            /* JSON escape */
             sb_putc(&sb, '"');
             for (const char *s = n->sval; *s; s++) {
                 if (*s == '"' || *s == '\\') { sb_putc(&sb, '\\'); sb_putc(&sb, *s); }
@@ -827,13 +867,12 @@ static char *gen_expr(Node *n, Ctx *ctx) {
         return sb_take(&sb);
     }
     default:
-        sb_printf(&sb, "/* ??? expr kind=%d */", n->kind);
+        sb_printf(&sb, "/* unknown expr kind=%d */", n->kind);
         return sb_take(&sb);
     }
 }
 
 static char *gen_call(Node *n, Ctx *ctx) {
-    /* super.init(...) → super(...) */
     if (n->a->kind == N_MEMBER && n->a->a && n->a->a->kind == N_ID &&
         n->a->a->name && strcmp(n->a->a->name, "super") == 0 &&
         n->a->name && strcmp(n->a->name, "init") == 0) {
@@ -848,7 +887,6 @@ static char *gen_call(Node *n, Ctx *ctx) {
         return sb_take(&sb);
     }
 
-    /* Foo(x: 1, y: 2) → Foo({x: 1, y: 2}) */
     if (n->a->kind == N_ID && ss_has(&ctx->struct_names, n->a->name)) {
         StrBuf sb; sb_init(&sb);
         sb_printf(&sb, "%s({", n->a->name);
@@ -869,7 +907,6 @@ static char *gen_call(Node *n, Ctx *ctx) {
         return sb_take(&sb);
     }
 
-    /* JS: args.length === 2 && args[1].k === "Closure" */
     int do_swap = 0;
     if (n->a->kind == N_MEMBER && strcmp(n->a->name, "reduce") == 0 &&
         n->args->count == 2 && ((Node*)n->args->items[1])->a->kind == N_CLOSURE)
@@ -931,7 +968,7 @@ static void collect_dollar(Node *n, int *max_idx, int *found) {
     collect_dollar(n->c, max_idx, found);
     collect_dollar(n->type, max_idx, found);
     collect_dollar(n->retType, max_idx, found);
-    #define W(l) do { if (n->l) for (int i=0;i<n->l->count;i++) collect_dollar((Node*)n->l->items[i], max_idx, found); } while(0)
+    #define W(l) do { if (n->l) for (int i = 0; i < n->l->count; i++) collect_dollar((Node*)n->l->items[i], max_idx, found); } while(0)
     W(stmts); W(params); W(fields); W(methods); W(cases); W(body);
     W(args); W(items); W(pairs); W(patterns); W(bindings); W(parts);
     #undef W
@@ -964,11 +1001,8 @@ static char *gen_closure(Node *n, Ctx *ctx) {
 
     char *body = block_returning(n->body, &inner);
     char *pstr = sb_take(&params);
-    if (n->is_async) {
-        sb_printf(&sb, "(async (%s) => { %s })", pstr, body);
-    } else {
-        sb_printf(&sb, "((%s) => { %s })", pstr, body);
-    }
+    if (n->is_async) sb_printf(&sb, "(async (%s) => { %s })", pstr, body);
+    else             sb_printf(&sb, "((%s) => { %s })", pstr, body);
     free(pstr); free(body);
     return sb_take(&sb);
 }
