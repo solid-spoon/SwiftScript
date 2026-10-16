@@ -5,6 +5,7 @@
 #include <string.h>
 
 static int _sw_counter = 0;
+static int _let_bind_counter = 0;
 
 typedef struct { char **items; int count, cap; } SS;
 static void ss_add(SS *s, const char *v) {
@@ -74,6 +75,8 @@ static char *gen_switch(Node *n, Ctx *ctx);
 static char *gen_struct(Node *n, Ctx *ctx);
 static char *gen_enum(Node *n, Ctx *ctx);
 static char *block_returning(List *stmts, Ctx *ctx);
+static char *gen_if_let_stmt(Node *n, Ctx *ctx);
+static char *gen_guard_stmt(Node *n, Ctx *ctx);
 
 static char *gen_stmt(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
@@ -121,10 +124,12 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
         else sb_put(&sb, "return;");
         break;
     case N_EXPR_STMT:
-        if (n->a->kind == N_IF) return gen_if_stmt(n->a, ctx);
-        if (n->a->kind == N_SWITCH) return gen_switch(n->a, ctx);
+        if (n->a->kind == N_IF)      return gen_if_stmt(n->a, ctx);
+        if (n->a->kind == N_IF_LET)  return gen_if_let_stmt(n->a, ctx);
+        if (n->a->kind == N_SWITCH)  return gen_switch(n->a, ctx);
         { char *e = gen_expr(n->a, ctx); sb_printf(&sb, "%s;", e); free(e); }
         break;
+    case N_GUARD_LET: return gen_guard_stmt(n, ctx);
     case N_BLOCK: {
         sb_put(&sb, "{ ");
         for (int i = 0; i < n->stmts->count; i++) {
@@ -187,6 +192,127 @@ static char *gen_if_stmt(Node *n, Ctx *ctx) {
             free(e);
         }
     }
+    return sb_take(&sb);
+}
+
+static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
+    StrBuf sb; sb_init(&sb);
+    int id = ++_let_bind_counter;
+    int count = n->items->count;
+    int has_else = (n->c != NULL);
+
+    sb_put(&sb, "{\n");
+
+    /* _ok-флаг нужен только если есть else, чтобы блок else
+       выполнился ровно один раз и только если все биндинги
+       и условие провалились. */
+    if (has_else)
+        sb_printf(&sb, "  let _ok%d = false;\n", id);
+
+    /* Вложенные if: каждый биндинг — свой уровень. */
+    for (int i = 0; i < count; i++) {
+        Node *b = n->items->items[i];
+        char *v = gen_expr(b->a, ctx);
+        const char *kw = (b->sval && strcmp(b->sval, "var") == 0) ? "let" : "const";
+
+        sb_printf(&sb, "  const _t%d_%d = %s;\n", id, i, v);
+        sb_printf(&sb, "  if (_t%d_%d != null) {\n", id, i);
+        sb_printf(&sb, "    %s %s = _t%d_%d;\n", kw, b->name, id, i);
+
+        if (ctx->locals.items) ss_add(&ctx->locals, b->name);
+        free(v);
+    }
+
+    /* Опциональное условие. */
+    if (n->a) {
+        char *c = gen_expr(n->a, ctx);
+        sb_printf(&sb, "  if (%s) {\n", c);
+        free(c);
+    }
+
+    if (has_else) sb_printf(&sb, "    _ok%d = true;\n", id);
+
+    /* Тело */
+    if (n->b && n->b->kind == N_BLOCK) {
+        for (int i = 0; i < n->b->stmts->count; i++) {
+            char *s = gen_stmt(n->b->stmts->items[i], ctx);
+            sb_printf(&sb, "    %s\n", s);
+            free(s);
+        }
+    }
+
+    /* Закрываем вложенные if. */
+    if (n->a) sb_put(&sb, "  }\n");
+    for (int i = 0; i < count; i++) sb_put(&sb, "  }\n");
+
+    /* else */
+    if (has_else) {
+        sb_printf(&sb, "  if (!_ok%d) ", id);
+        if (n->c->kind == N_IF) {
+            char *e = gen_if_stmt(n->c, ctx);
+            sb_printf(&sb, "%s\n", e);
+            free(e);
+        } else if (n->c->kind == N_IF_LET) {
+            /* else { ... } — обёртка блока уже внутри gen_if_let_stmt */
+            char *e = gen_if_let_stmt(n->c, ctx);
+            sb_printf(&sb, "%s\n", e);
+            free(e);
+        } else {
+            char *e = gen_stmt(n->c, ctx);
+            sb_printf(&sb, "%s\n", e);
+            free(e);
+        }
+    }
+
+    sb_put(&sb, "}");
+    return sb_take(&sb);
+}
+
+static char *gen_guard_stmt(Node *n, Ctx *ctx) {
+    StrBuf sb; sb_init(&sb);
+    int id = ++_let_bind_counter;
+    int count = n->items->count;
+
+    if (count > 0) {
+        sb_put(&sb, "let ");
+        for (int i = 0; i < count; i++) {
+            if (i) sb_put(&sb, ", ");
+            sb_printf(&sb, "_g%d_%d", id, i);
+        }
+        sb_put(&sb, ";\n");
+    }
+
+    if (count > 0) {
+        sb_put(&sb, "if (");
+        for (int i = 0; i < count; i++) {
+            Node *b = n->items->items[i];
+            char *v = gen_expr(b->a, ctx);
+            if (i) sb_put(&sb, " || ");
+            sb_printf(&sb, "((_g%d_%d = %s) == null)", id, i, v);
+            free(v);
+        }
+        sb_put(&sb, ") ");
+        char *e = gen_stmt(n->b, ctx);
+        sb_printf(&sb, "%s\n", e);
+        free(e);
+
+        for (int i = 0; i < count; i++) {
+            Node *b = n->items->items[i];
+            const char *kw = (b->sval && strcmp(b->sval, "var") == 0) ? "let" : "const";
+            sb_printf(&sb, "%s %s = _g%d_%d;\n", kw, b->name, id, i);
+            if (ctx->locals.items) ss_add(&ctx->locals, b->name);
+        }
+    }
+
+    if (n->a) {
+        char *c = gen_expr(n->a, ctx);
+        sb_printf(&sb, "if (!(%s)) ", c);
+        char *e = gen_stmt(n->b, ctx);
+        sb_printf(&sb, "%s\n", e);
+        free(e);
+        free(c);
+    }
+
     return sb_take(&sb);
 }
 
@@ -473,6 +599,9 @@ static char *gen_if_expr(Node *n, Ctx *ctx);
 static char *gen_expr(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
     switch (n->kind) {
+    case N_IF_LET:
+    case N_GUARD_LET:
+    return xstrdup("undefined /* if-let/guard as expression not supported */");
     case N_LIT:
         if (n->isnull) return xstrdup("null");
         if (n->sval) {
@@ -744,6 +873,7 @@ static char *gen_template(Node *n, Ctx *ctx) {
 
 char *gen_program(Node *prog) {
     _sw_counter = 0;
+    _let_bind_counter = 0;
     Ctx ctx; memset(&ctx, 0, sizeof(ctx));
     collect_decls(prog, &ctx);
     StrBuf sb; sb_init(&sb);

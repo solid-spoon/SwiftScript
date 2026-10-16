@@ -15,6 +15,12 @@
 
 #define PATHBUF 8192
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#endif
+
+
 const char *SWIFTS_RUNTIME =
 "const _force = (x) => { if (x === null || x === undefined) throw new Error(\"Force unwrap of nil\"); return x; };\n"
 "const print = (...args) => console.log(...args);\n"

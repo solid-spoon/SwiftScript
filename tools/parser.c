@@ -98,6 +98,8 @@ static Node *parse_struct(P *p);
 static Node *parse_enum(P *p);
 static Node *parse_import(P *p);
 static Node *parse_export(P *p);
+static Node *parse_one_binding(P *p);
+static Node *parse_guard(P *p);
 
 static Node *parse_program(P *p) {
     Node *n = node_new(N_PROGRAM, 1, 1);
@@ -116,6 +118,17 @@ static Node *parse_let(P *p) {
     if (match_op(p, "=")) n->a = parse_expr(p, 0, 0);
     match_op(p, ";");
     return n;
+}
+
+static Node *parse_one_binding(P *p) {
+    Token *kw = next_tok(p);           /* let | var */
+    Token *id = expect_id(p);
+    Node *b = node_new(N_LET, kw->line, kw->col);
+    b->sval = xstrdup(kw->value);
+    b->name = xstrdup(id->value);
+    expect_op(p, "=");
+    b->a = parse_expr(p, 0, 1);        /* noTrailing */
+    return b;
 }
 
 static Node *parse_import(P *p) {
@@ -507,13 +520,56 @@ static Node *parse_for(P *p) {
 
 static Node *parse_if(P *p) {
     Token *kw = expect_kw(p, "if");
+
+    /* if let / if var — N_IF_LET */
+    if (check_kw(p, "let") || check_kw(p, "var")) {
+        Node *n = node_new(N_IF_LET, kw->line, kw->col);
+        n->items = list_new();
+        while (1) {
+            if (check_kw(p, "let") || check_kw(p, "var"))
+                list_push(n->items, parse_one_binding(p));
+            else {
+                n->a = parse_expr(p, 0, 1);
+                break;
+            }
+            if (!check_op(p, ",")) break;
+            next_tok(p);
+        }
+        n->b = parse_block(p);
+        if (match_kw(p, "else")) {
+            if (check_kw(p, "if")) n->c = parse_if(p);
+            else                   n->c = parse_block(p);
+        }
+        return n;
+    }
+
+    /* if */
     Node *n = node_new(N_IF, kw->line, kw->col);
     n->a = parse_expr(p, 0, 1);
     n->b = parse_block(p);
     if (match_kw(p, "else")) {
         if (check_kw(p, "if")) n->c = parse_if(p);
-        else n->c = parse_block(p);
+        else                   n->c = parse_block(p);
     }
+    return n;
+}
+
+static Node *parse_guard(P *p) {
+    Token *kw = expect_kw(p, "guard");
+    Node *n = node_new(N_GUARD_LET, kw->line, kw->col);
+    n->items = list_new();
+    while (1) {
+        if (check_kw(p, "let") || check_kw(p, "var"))
+            list_push(n->items, parse_one_binding(p));
+        else {
+            n->a = parse_expr(p, 0, 1);
+            break;
+        }
+        if (!check_op(p, ",")) break;
+        next_tok(p);
+    }
+    expect_kw(p, "else");
+    n->b = parse_block(p);
     return n;
 }
 
@@ -545,6 +601,7 @@ static Node *parse_stmt(P *p) {
         n->a = parse_if(p);
         return n;
     }
+    if (check_kw(p, "guard")) return parse_guard(p);
     if (check_kw(p, "while")) return parse_while(p);
     if (check_kw(p, "for"))   return parse_for(p);
     if (check_kw(p, "break")) {
