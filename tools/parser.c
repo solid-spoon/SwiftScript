@@ -26,6 +26,13 @@ static void p_err(P *p, int line, int col, const char *fmt, ...) {
     longjmp(p->jbs[p->jb_top - 1], 1);
 }
 
+static void p_push_jb(P *p) {
+    if (p->jb_top >= MAX_JB) {
+        p_err(p, 0, 0, "Backtracking nesting too deep (max %d)", MAX_JB);
+    }
+    p->jb_top++;
+}
+
 static Token *peek(P *p, int n) {
     int i = p->pos + n;
     if (i < 0) i = 0;
@@ -50,13 +57,23 @@ static int check_kw(P *p, const char *v) { return tok_is(peek(p, 0), "kw", v); }
 static int check_id_tok(P *p)            { return peek(p, 0)->type == T_ID; }
 static int check_eof(P *p)               { return peek(p, 0)->type == T_EOF; }
 
+/* '_' lexes as T_ID, not T_OP */
+static int check_underscore(P *p) {
+    Token *t = peek(p, 0);
+    return t->type == T_ID && t->value && strcmp(t->value, "_") == 0;
+}
+static int match_underscore(P *p) {
+    if (check_underscore(p)) { p->pos++; return 1; }
+    return 0;
+}
+
 static int match_op(P *p, const char *v) { if (check_op(p, v)) { p->pos++; return 1; } return 0; }
 static int match_kw(P *p, const char *v) { if (check_kw(p, v)) { p->pos++; return 1; } return 0; }
 
 static Token *expect_op(P *p, const char *v) {
     if (!check_op(p, v)) {
         Token *g = peek(p, 0);
-        p_err(p, g->line, g->col, "Ожидалось op '%s', получено '%s'",
+        p_err(p, g->line, g->col, "Expected op '%s', got '%s'",
               v, g->value ? g->value : "<eof>");
     }
     return next_tok(p);
@@ -64,7 +81,7 @@ static Token *expect_op(P *p, const char *v) {
 static Token *expect_kw(P *p, const char *v) {
     if (!check_kw(p, v)) {
         Token *g = peek(p, 0);
-        p_err(p, g->line, g->col, "Ожидалось kw '%s', получено '%s'",
+        p_err(p, g->line, g->col, "Expected kw '%s', got '%s'",
               v, g->value ? g->value : "<eof>");
     }
     return next_tok(p);
@@ -72,7 +89,7 @@ static Token *expect_kw(P *p, const char *v) {
 static Token *expect_id(P *p) {
     if (!check_id_tok(p)) {
         Token *g = peek(p, 0);
-        p_err(p, g->line, g->col, "Ожидалось имя, получено '%s'",
+        p_err(p, g->line, g->col, "Expected identifier, got '%s'",
               g->value ? g->value : "<eof>");
     }
     return next_tok(p);
@@ -82,14 +99,14 @@ static Token *expect_member_name(P *p) {
     if (t->type == T_ID) return next_tok(p);
     if (t->type == T_KW && t->value && strcmp(t->value, "init") == 0)
         return next_tok(p);
-    p_err(p, t->line, t->col, "Ожидалось имя поля, получено '%s'",
+    p_err(p, t->line, t->col, "Expected member name, got '%s'",
           t->value ? t->value : "<eof>");
     return NULL;
 }
 static Token *expect_str(P *p) {
     Token *t = peek(p, 0);
     if (t->type != T_STR) {
-        p_err(p, t->line, t->col, "Ожидалась строка, получено '%s'",
+        p_err(p, t->line, t->col, "Expected string, got '%s'",
               t->value ? t->value : "<eof>");
     }
     return next_tok(p);
@@ -126,7 +143,7 @@ static Node *parse_let(P *p) {
     Token *kw = next_tok(p);
     Token *id = expect_id(p);
     Node *n = node_new(N_LET, kw->line, kw->col);
-    n->sval = xstrdup(kw->value);  /* "let" | "var" */
+    n->sval = xstrdup(kw->value);
     n->name = xstrdup(id->value);
     if (match_op(p, ":")) n->type = parse_type(p);
     if (match_op(p, "=")) n->a = parse_expr(p, 0, 0);
@@ -135,13 +152,13 @@ static Node *parse_let(P *p) {
 }
 
 static Node *parse_one_binding(P *p) {
-    Token *kw = next_tok(p);           /* let | var */
+    Token *kw = next_tok(p);
     Token *id = expect_id(p);
     Node *b = node_new(N_LET, kw->line, kw->col);
     b->sval = xstrdup(kw->value);
     b->name = xstrdup(id->value);
     expect_op(p, "=");
-    b->a = parse_expr(p, 0, 1);        /* noTrailing */
+    b->a = parse_expr(p, 0, 1);
     return b;
 }
 
@@ -209,7 +226,7 @@ static Node *parse_export(P *p) {
     else {
         Token *g = peek(p, 0);
         p_err(p, g->line, g->col,
-              "После export ожидалось let, var, func, struct или enum, получено '%s'",
+              "After export expected let/var/func/struct/enum/class, got '%s'",
               g->value ? g->value : "<eof>");
     }
     (void)kw;
@@ -276,8 +293,7 @@ static Node *parse_func(P *p) {
     if (!check_op(p, ")")) {
         for (;;) {
             const char *label = NULL, *pname = NULL;
-            if (check_op(p, "_")) {
-                next_tok(p);
+            if (match_underscore(p)) {
                 pname = xstrdup(expect_id(p)->value);
             } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
                 label = xstrdup(next_tok(p)->value);
@@ -302,7 +318,7 @@ static Node *parse_func(P *p) {
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
             Token *g = peek(p, 0);
-            p_err(p, g->line, g->col, "Незакрытая функция");
+            p_err(p, g->line, g->col, "Unterminated function");
         }
         list_push(n->body, parse_stmt(p));
     }
@@ -319,8 +335,7 @@ static Node *parse_init(P *p) {
     if (!check_op(p, ")")) {
         for (;;) {
             const char *label = NULL, *pname = NULL;
-            if (check_op(p, "_")) {
-                next_tok(p);
+            if (match_underscore(p)) {
                 pname = xstrdup(expect_id(p)->value);
             } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
                 label = xstrdup(next_tok(p)->value);
@@ -344,7 +359,7 @@ static Node *parse_init(P *p) {
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
             Token *g = peek(p, 0);
-            p_err(p, g->line, g->col, "Незакрытый init");
+            p_err(p, g->line, g->col, "Unterminated init");
         }
         list_push(n->body, parse_stmt(p));
     }
@@ -363,7 +378,7 @@ static Node *parse_struct(P *p) {
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
             Token *g = peek(p, 0);
-            p_err(p, g->line, g->col, "Незакрытая структура");
+            p_err(p, g->line, g->col, "Unterminated struct");
         }
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
@@ -380,7 +395,7 @@ static Node *parse_struct(P *p) {
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
-                  "В структуре ожидалось поле или метод, получено '%s'",
+                  "In struct expected field or method, got '%s'",
                   g->value ? g->value : "<eof>");
         }
     }
@@ -398,12 +413,12 @@ static Node *parse_enum(P *p) {
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
             Token *g = peek(p, 0);
-            p_err(p, g->line, g->col, "Незакрытый enum");
+            p_err(p, g->line, g->col, "Unterminated enum");
         }
         if (!match_kw(p, "case")) {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
-                  "В enum ожидался case, получено '%s'",
+                  "In enum expected case, got '%s'",
                   g->value ? g->value : "<eof>");
         }
         Token *cid = expect_id(p);
@@ -414,8 +429,7 @@ static Node *parse_enum(P *p) {
             if (!check_op(p, ")")) {
                 for (;;) {
                     const char *plabel = NULL, *pname = NULL;
-                    if (check_op(p, "_")) {
-                        next_tok(p);
+                    if (match_underscore(p)) {
                         pname = xstrdup(expect_id(p)->value);
                     } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
                         plabel = xstrdup(next_tok(p)->value);
@@ -469,7 +483,7 @@ static Node *parse_class(P *p) {
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
             Token *g = peek(p, 0);
-            p_err(p, g->line, g->col, "Незакрытый class");
+            p_err(p, g->line, g->col, "Unterminated class");
         }
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
@@ -488,7 +502,7 @@ static Node *parse_class(P *p) {
             next_tok(p);
             if (!check_kw(p, "func")) {
                 Token *g = peek(p, 0);
-                p_err(p, g->line, g->col, "После override ожидался func");
+                p_err(p, g->line, g->col, "After override expected func");
             }
             list_push(n->methods, parse_func(p));
         } else if (check_kw(p, "func")) {
@@ -496,7 +510,7 @@ static Node *parse_class(P *p) {
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
-                  "В class ожидалось поле, init, func или override, получено '%s'",
+                  "In class expected field, init, func, or override, got '%s'",
                   g->value ? g->value : "<eof>");
         }
     }
@@ -519,8 +533,7 @@ static Node *parse_pattern(P *p) {
                         Node *b = node_new(N_PAT_BIND, bid->line, bid->col);
                         b->name = xstrdup(bid->value);
                         list_push(pat->bindings, b);
-                    } else if (check_op(p, "_")) {
-                        next_tok(p);
+                    } else if (match_underscore(p)) {
                         Node *b = node_new(N_PAT_BIND, dot->line, dot->col);
                         b->name = NULL;
                         list_push(pat->bindings, b);
@@ -543,7 +556,7 @@ static Node *parse_pattern(P *p) {
         b->name = xstrdup(id->value);
         return b;
     }
-    if (check_op(p, "_")) { next_tok(p); return node_new(N_PAT_WILD, 1, 1); }
+    if (match_underscore(p)) return node_new(N_PAT_WILD, 1, 1);
 
     if (match_kw(p, "true")) {
         Node *pat = node_new(N_PAT_LIT, 1, 1);
@@ -584,23 +597,33 @@ static Node *parse_pattern(P *p) {
 static Node *parse_switch(P *p) {
     Token *kw = expect_kw(p, "switch");
     Node *n = node_new(N_SWITCH, kw->line, kw->col);
-    n->a = parse_expr(p, 0, 1);   /* subject */
+    n->a = parse_expr(p, 0, 1);
     expect_op(p, "{");
     n->cases = list_new();
+    int seen_default = 0;
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
             Token *g = peek(p, 0);
-            p_err(p, g->line, g->col, "Незакрытый switch");
+            p_err(p, g->line, g->col, "Unterminated switch");
         }
         if (match_kw(p, "default")) {
+            if (seen_default) {
+                Token *g = peek(p, 0);
+                p_err(p, g->line, g->col, "Duplicate 'default' in switch");
+            }
+            seen_default = 1;
             expect_op(p, ":");
             List *body = list_new();
             while (!check_kw(p, "case") && !check_kw(p, "default") && !check_op(p, "}")) {
-                if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Незакрытый switch"); }
+                if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Unterminated switch"); }
                 list_push(body, parse_stmt(p));
             }
-            n->body = body;  /* defaultBody */
+            n->body = body;
         } else if (match_kw(p, "case")) {
+            if (seen_default) {
+                Token *g = peek(p, 0);
+                p_err(p, g->line, g->col, "'case' after 'default' in switch");
+            }
             Node *sc = node_new(N_SWITCH_CASE, kw->line, kw->col);
             sc->patterns = list_new();
             list_push(sc->patterns, parse_pattern(p));
@@ -609,14 +632,14 @@ static Node *parse_switch(P *p) {
             expect_op(p, ":");
             sc->body = list_new();
             while (!check_kw(p, "case") && !check_kw(p, "default") && !check_op(p, "}")) {
-                if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Незакрытый switch"); }
+                if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Unterminated switch"); }
                 list_push(sc->body, parse_stmt(p));
             }
             list_push(n->cases, sc);
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
-                  "В switch ожидался case или default, получено '%s'",
+                  "In switch expected 'case' or 'default', got '%s'",
                   g->value ? g->value : "<eof>");
         }
     }
@@ -629,7 +652,7 @@ static Node *parse_block(P *p) {
     Node *n = node_new(N_BLOCK, 1, 1);
     n->stmts = list_new();
     while (!check_op(p, "}")) {
-        if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Незакрытый блок"); }
+        if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Unterminated block"); }
         list_push(n->stmts, parse_stmt(p));
     }
     expect_op(p, "}");
@@ -655,23 +678,36 @@ static Node *parse_for(P *p) {
     return n;
 }
 
+/* Common parser for if-let / guard-let condition lists.
+   Returns a condition chain: bindings in n->items, condition in n->a. */
+static void parse_let_cond_list(P *p, Node *n) {
+    n->items = list_new();
+    while (1) {
+        if (check_kw(p, "let") || check_kw(p, "var")) {
+            list_push(n->items, parse_one_binding(p));
+        } else {
+            Node *cond = parse_expr(p, 0, 1);
+            if (!n->a) {
+                n->a = cond;
+            } else {
+                Node *b = node_new(N_BIN, cond->line, cond->col);
+                b->op = xstrdup("&&");
+                b->a = n->a;
+                b->b = cond;
+                n->a = b;
+            }
+        }
+        if (!check_op(p, ",")) break;
+        next_tok(p);
+    }
+}
+
 static Node *parse_if(P *p) {
     Token *kw = expect_kw(p, "if");
 
-    /* if let / if var — N_IF_LET */
     if (check_kw(p, "let") || check_kw(p, "var")) {
         Node *n = node_new(N_IF_LET, kw->line, kw->col);
-        n->items = list_new();
-        while (1) {
-            if (check_kw(p, "let") || check_kw(p, "var"))
-                list_push(n->items, parse_one_binding(p));
-            else {
-                n->a = parse_expr(p, 0, 1);
-                break;
-            }
-            if (!check_op(p, ",")) break;
-            next_tok(p);
-        }
+        parse_let_cond_list(p, n);
         n->b = parse_block(p);
         if (match_kw(p, "else")) {
             if (check_kw(p, "if")) n->c = parse_if(p);
@@ -680,7 +716,6 @@ static Node *parse_if(P *p) {
         return n;
     }
 
-    /* if */
     Node *n = node_new(N_IF, kw->line, kw->col);
     n->a = parse_expr(p, 0, 1);
     n->b = parse_block(p);
@@ -694,17 +729,7 @@ static Node *parse_if(P *p) {
 static Node *parse_guard(P *p) {
     Token *kw = expect_kw(p, "guard");
     Node *n = node_new(N_GUARD_LET, kw->line, kw->col);
-    n->items = list_new();
-    while (1) {
-        if (check_kw(p, "let") || check_kw(p, "var"))
-            list_push(n->items, parse_one_binding(p));
-        else {
-            n->a = parse_expr(p, 0, 1);
-            break;
-        }
-        if (!check_op(p, ",")) break;
-        next_tok(p);
-    }
+    parse_let_cond_list(p, n);
     expect_kw(p, "else");
     n->b = parse_block(p);
     return n;
@@ -713,12 +738,12 @@ static Node *parse_guard(P *p) {
 static Node *parse_try(P *p) {
     Token *kw = expect_kw(p, "try");
     if (!check_op(p, "{")) {
-        p_err(p, kw->line, kw->col, "После try ожидался блок {");
+        p_err(p, kw->line, kw->col, "After try expected block {");
     }
     Node *n = node_new(N_TRY, kw->line, kw->col);
     n->a = parse_block(p);
     if (!match_kw(p, "catch")) {
-        p_err(p, kw->line, kw->col, "Ожидался catch после try");
+        p_err(p, kw->line, kw->col, "Expected catch after try");
     }
     if (check_id_tok(p)) {
         Token *id = next_tok(p);
@@ -814,6 +839,10 @@ static double get_prec(const char *op) {
     return -1;
 }
 
+static int is_right_assoc(const char *op) {
+    return strcmp(op, "??") == 0;
+}
+
 static int is_lvalue(Node *n) {
     if (!n) return 0;
     switch (n->kind) {
@@ -862,7 +891,6 @@ static Node *parse_postfix(P *p, int no_trailing) {
         is_new = 1;
     }
     Node *node = NULL;
-    /* parsePrimary inline */
     {
         Token *t = peek(p, 0);
         if (t->type == T_NUM) {
@@ -870,10 +898,8 @@ static Node *parse_postfix(P *p, int no_trailing) {
             node = lit_num(t->num, t->line, t->col);
         } else if (t->type == T_STR) {
             next_tok(p);
-            /* handle interpolation */
             const char *raw = t->value;
             if (!strstr(raw, "\\(")) {
-                /* unescape in place */
                 StrBuf sb; sb_init(&sb);
                 for (size_t i = 0; raw[i]; ) {
                     if (raw[i] == '\\' && raw[i+1]) {
@@ -890,7 +916,6 @@ static Node *parse_postfix(P *p, int no_trailing) {
                 }
                 node = lit_str(sb_take(&sb), t->line, t->col);
             } else {
-                /* template */
                 node = node_new(N_TEMPLATE, t->line, t->col);
                 node->parts = list_new();
                 StrBuf text; sb_init(&text);
@@ -913,14 +938,12 @@ static Node *parse_postfix(P *p, int no_trailing) {
                             j++;
                         }
                         char *sub = xstrndup(raw + i, j - i);
-                        /* recursive tokenize+parse */
                         SSError serr = {0};
                         TokenList *subtoks = tokenize(sub, &serr);
                         free(sub);
                         if (!subtoks) {
-                            p_err(p, t->line, t->col, "Ошибка в интерполяции: %s", serr.msg);
+                            p_err(p, t->line, t->col, "Error in interpolation: %s", serr.msg);
                         }
-                        /* recursively parse as sub-program */
                         P sub_p = {0};
                         sub_p.toks = subtoks;
                         sub_p.jb_top = 1;
@@ -929,12 +952,12 @@ static Node *parse_postfix(P *p, int no_trailing) {
                             sub_ast = parse_program(&sub_p);
                         } else {
                             free_tokens(subtoks);
-                            p_err(p, t->line, t->col, "Ошибка в интерполяции: %s", sub_p.err_msg);
+                            p_err(p, t->line, t->col, "Error in interpolation: %s", sub_p.err_msg);
                         }
                         free_tokens(subtoks);
                         if (!sub_ast || sub_ast->stmts->count != 1 ||
                             ((Node*)sub_ast->stmts->items[0])->kind != N_EXPR_STMT) {
-                            p_err(p, t->line, t->col, "Интерполяция должна быть выражением");
+                            p_err(p, t->line, t->col, "Interpolation must be an expression");
                         }
                         Node *expr = ((Node*)sub_ast->stmts->items[0])->a;
                         Node *pt = node_new(N_TEMPLATE_PART, t->line, t->col);
@@ -1012,13 +1035,13 @@ static Node *parse_postfix(P *p, int no_trailing) {
             else node = tuple;
         } else if (check_op(p, "{")) {
             node = parse_closure(p);
-                } else if (check_kw(p, "func")) {
+        } else if (check_kw(p, "func")) {
             next_tok(p);
             expect_op(p, "(");
             List *params = list_new();
             if (!check_op(p, ")")) {
                 for (;;) {
-                    if (check_op(p, "_")) next_tok(p);
+                    match_underscore(p);
                     Token *pid = expect_id(p);
                     Node *pr = node_new(N_PARAM, pid->line, pid->col);
                     pr->name = xstrdup(pid->value);
@@ -1048,7 +1071,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
             next_tok(p);
             node = id_node("super", t->line, t->col);
         } else {
-            p_err(p, t->line, t->col, "Неожиданный токен '%s'",
+            p_err(p, t->line, t->col, "Unexpected token '%s'",
                   t->value ? t->value : "<eof>");
         }
     }
@@ -1078,7 +1101,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
                 break;
             } else {
                 Token *g = peek(p, 0);
-                p_err(p, g->line, g->col, "Ожидался вызов (...) после new");
+                p_err(p, g->line, g->col, "Expected call (...) after new");
             }
         }
     }
@@ -1164,45 +1187,48 @@ static Node *parse_expr(P *p, double min_prec, int no_trailing) {
         if (t->type != T_OP || !t->value) break;
         double prec = get_prec(t->value);
         if (prec < 0 || prec < min_prec) break;
+        int right_assoc = is_right_assoc(t->value);
         next_tok(p);
-        Node *right = parse_expr(p, prec + 0.01, no_trailing);
+        double rprec = right_assoc ? prec : prec + 0.01;
+        Node *right = parse_expr(p, rprec, no_trailing);
         Node *b = node_new(N_BIN, t->line, t->col);
         b->op = xstrdup(t->value);
         b->a = left;
         b->b = right;
         left = b;
+        if (right_assoc) break;
     }
     if (min_prec == 0 && check_op(p, "?")) {
         Token *q = next_tok(p);
         Node *n = node_new(N_TERNARY, q->line, q->col);
         n->a = left;
-        n->b = parse_expr(p, 0, 0);
+        n->b = parse_expr(p, 0, no_trailing);
         expect_op(p, ":");
-        n->c = parse_expr(p, 0, 0);
+        n->c = parse_expr(p, 0, no_trailing);
         left = n;
     }
     if (min_prec == 0 && check_op(p, "=")) {
         Token *eq = next_tok(p);
         if (!is_lvalue(left)) {
             p_err(p, eq->line, eq->col,
-                  "Левый операнд присваивания не является lvalue");
+                  "Left side of assignment is not an lvalue");
         }
         Node *n = node_new(N_ASSIGN, eq->line, eq->col);
         n->a = left;
         n->op = xstrdup("=");
-        n->b = parse_expr(p, 0, 0);
+        n->b = parse_expr(p, 0, no_trailing);
         left = n;
     } else if (min_prec == 0 && peek(p,0)->type == T_OP && peek(p,0)->value &&
                is_assign_op(peek(p,0)->value)) {
         Token *eq = next_tok(p);
         if (!is_lvalue(left)) {
             p_err(p, eq->line, eq->col,
-                  "Левый операнд присваивания не является lvalue");
+                  "Left side of assignment is not an lvalue");
         }
         Node *n = node_new(N_ASSIGN, eq->line, eq->col);
         n->a = left;
         n->op = xstrdup(eq->value);
-        n->b = parse_expr(p, 0, 0);
+        n->b = parse_expr(p, 0, no_trailing);
         left = n;
     }
     return left;
@@ -1211,18 +1237,18 @@ static Node *parse_expr(P *p, double min_prec, int no_trailing) {
 static Node *parse_closure(P *p) {
     expect_op(p, "{");
     int is_async_cl = match_kw(p, "async");
-    int save = p->pos;
+    volatile int save = p->pos;
     List *params = NULL;
 
     if (check_op(p, "(")) {
-        int jb_save = p->jb_top;
-        p->jb_top++;
+        volatile int jb_save = p->jb_top;
+        p_push_jb(p);
         if (setjmp(p->jbs[p->jb_top - 1]) == 0) {
             next_tok(p);
             List *ps = list_new();
             if (!check_op(p, ")")) {
                 for (;;) {
-                    if (check_op(p, "_")) next_tok(p);
+                    match_underscore(p);
                     Token *pid = expect_id(p);
                     Node *pr = node_new(N_PARAM, pid->line, pid->col);
                     pr->name = xstrdup(pid->value);
@@ -1252,9 +1278,9 @@ static Node *parse_closure(P *p) {
           strcmp(peek(p,1)->value, "in") == 0) ||
          (peek(p,1)->type == T_OP && peek(p,1)->value &&
           strcmp(peek(p,1)->value, ",") == 0))) {
-        int try_save = p->pos;
-        int jb_save = p->jb_top;
-        p->jb_top++;
+        volatile int try_save = p->pos;
+        volatile int jb_save = p->jb_top;
+        p_push_jb(p);
         if (setjmp(p->jbs[p->jb_top - 1]) == 0) {
             List *ps = list_new();
             Node *pr = node_new(N_PARAM, 1, 1);
@@ -1284,7 +1310,7 @@ static Node *parse_closure(P *p) {
     n->body = list_new();
     n->is_async = is_async_cl;
     while (!check_op(p, "}")) {
-        if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Незакрытое замыкание"); }
+        if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Unterminated closure"); }
         list_push(n->body, parse_stmt(p));
     }
     expect_op(p, "}");
