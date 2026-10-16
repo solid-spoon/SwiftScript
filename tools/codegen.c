@@ -78,6 +78,7 @@ static char *gen_enum(Node *n, Ctx *ctx);
 static char *block_returning(List *stmts, Ctx *ctx);
 static char *gen_if_let_stmt(Node *n, Ctx *ctx);
 static char *gen_guard_stmt(Node *n, Ctx *ctx);
+static int   block_terminates(List *stmts);
 
 static char *gen_stmt(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
@@ -288,6 +289,11 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
 }
 
 static char *gen_guard_stmt(Node *n, Ctx *ctx) {
+    if (n->b && n->b->kind == N_BLOCK && !block_terminates(n->b->stmts)) {
+        fprintf(stderr,
+            "swsc: guard else-block must end with return, throw, break, or continue\n");
+        exit(2);
+    }
     StrBuf sb; sb_init(&sb);
     int id = ++_let_bind_counter;
     int count = n->items->count;
@@ -333,6 +339,24 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
     }
 
     return sb_take(&sb);
+}
+
+static int block_terminates(List *stmts) {
+    if (!stmts || stmts->count == 0) return 0;
+    Node *last = stmts->items[stmts->count - 1];
+    switch (last->kind) {
+    case N_RETURN:
+    case N_THROW:
+    case N_BREAK:
+    case N_CONTINUE:
+        return 1;
+    case N_EXPR_STMT:
+        if (last->a && last->a->kind == N_SWITCH) return 0;
+        if (last->a && last->a->kind == N_IF) return 0;
+        return 0;
+    default:
+        return 0;
+    }
 }
 
 static char *block_returning(List *stmts, Ctx *ctx) {
@@ -524,7 +548,7 @@ static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, char **bindings, i
         else if (p->sval) { char *j = xstrdup(p->sval); sb_printf(&sb, "%s === \"%s\"", subj, j); free(j); }
         else if (p->boolean) sb_printf(&sb, "%s === true", subj);
         else if (!p->boolean && p->num == 0 && !p->sval) sb_printf(&sb, "%s === false", subj);
-        else sb_printf(&sb, "%s === %g", subj, p->num);
+        else sb_printf(&sb, "%s === %.17g", subj, p->num);
         break;
     }
     case N_PAT_RANGE: {
@@ -640,6 +664,17 @@ static char *gen_class(Node *n, Ctx *parent) {
         }
         sb_put(&sb, ") {\n");
 
+        if (strcmp(m->name, "init") == 0) {
+            for (int fi = 0; fi < n->fields->count; fi++) {
+                Node *fld = n->fields->items[fi];
+                if (fld->a) {
+                    char *v = gen_expr(fld->a, &mctx);
+                    sb_printf(&sb, "    this.%s = %s;\n", fld->name, v);
+                    free(v);
+                }
+            }
+        }
+
         for (int j = 0; j < m->body->count; j++) {
             char *s = gen_stmt(m->body->items[j], &mctx);
             sb_printf(&sb, "    %s\n", s);
@@ -680,7 +715,7 @@ static char *gen_expr(Node *n, Ctx *ctx) {
             return sb_take(&sb);
         }
         if (n->is_bool) return xstrdup(n->boolean ? "true" : "false");
-        sb_printf(&sb, "%g", n->num);
+        sb_printf(&sb, "%.17g", n->num);
         return sb_take(&sb);
     case N_ID: {
         if (n->name && strcmp(n->name, "self") == 0 && ctx->self_prefix)
@@ -812,6 +847,7 @@ static char *gen_call(Node *n, Ctx *ctx) {
         sb_putc(&sb, ')');
         return sb_take(&sb);
     }
+
     /* Foo(x: 1, y: 2) → Foo({x: 1, y: 2}) */
     if (n->a->kind == N_ID && ss_has(&ctx->struct_names, n->a->name)) {
         StrBuf sb; sb_init(&sb);
@@ -819,8 +855,13 @@ static char *gen_call(Node *n, Ctx *ctx) {
         for (int i = 0; i < n->args->count; i++) {
             Node *a = n->args->items[i];
             if (i) sb_put(&sb, ", ");
-            if (!a->name) { sb_put(&sb, "??: "); }
-            else sb_printf(&sb, "%s: ", a->name);
+            if (!a->name) {
+                fprintf(stderr,
+                    "swsc: struct %s: named arguments required in constructor\n",
+                    n->a->name);
+                exit(2);
+            }
+            sb_printf(&sb, "%s: ", a->name);
             char *v = gen_expr(a->a, ctx);
             sb_put(&sb, v); free(v);
         }
@@ -879,6 +920,7 @@ static char *gen_if_expr(Node *n, Ctx *ctx) {
 
 static void collect_dollar(Node *n, int *max_idx, int *found) {
     if (!n) return;
+    if (n->kind == N_CLOSURE) return;
     if (n->kind == N_ID && n->name && n->name[0] == '$') {
         int idx = atoi(n->name + 1);
         if (idx > *max_idx) *max_idx = idx;

@@ -13,7 +13,8 @@
 #include <sys/types.h>
 #include <dirent.h>
 
-#define PATHBUF 8192
+#define PATHBUF 4096
+#define MAXPATH (PATHBUF * 4)
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
@@ -65,7 +66,7 @@ static int write_file(const char *path, const char *data) {
 }
 
 static int mkdir_p(const char *path) {
-    char tmp[8192];
+    char tmp[MAXPATH];
     size_t len = strlen(path);
     if (len >= sizeof(tmp)) return -1;
     memcpy(tmp, path, len + 1);
@@ -148,7 +149,7 @@ static int compile_file(const char *src_path, const char *out_path) {
     sb_put(&out, "\n");
 
     /* ensure dir */
-    char dir[8192];
+    char dir[MAXPATH];
     snprintf(dir, sizeof(dir), "%s", out_path);
     char *slash = strrchr(dir, '/');
     if (slash) { *slash = '\0'; mkdir_p(dir); }
@@ -163,7 +164,7 @@ static int compile_file(const char *src_path, const char *out_path) {
 }
 
 static int walk(const char *src_root, const char *out_root, const char *rel) {
-    char src_dir[8192], out_dir[8192];
+    char src_dir[MAXPATH], out_dir[MAXPATH];
     if (*rel) {
         snprintf(src_dir, sizeof(src_dir), "%s/%s", src_root, rel);
         snprintf(out_dir, sizeof(out_dir), "%s/%s", out_root, rel);
@@ -178,12 +179,17 @@ static int walk(const char *src_root, const char *out_root, const char *rel) {
     struct dirent *e;
     while ((e = readdir(d))) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-        char child_rel[8192];
+        char child_rel[MAXPATH];
         if (*rel) snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, e->d_name);
         else       snprintf(child_rel, sizeof(child_rel), "%s", e->d_name);
 
-        char full[8192];
-        snprintf(full, sizeof(full), "%s/%s", src_root, child_rel);
+        char full[MAXPATH];
+        int r = snprintf(full, sizeof(full), "%s/%s", src_root, child_rel);
+        if (r < 0 || (size_t)r >= sizeof(full)) {
+            fprintf(stderr, "swsc: path too long, skipping %s/%s\n",
+                    src_root, child_rel);
+            continue;
+        }
         struct stat st;
         if (stat(full, &st) != 0) continue;
 
@@ -191,13 +197,13 @@ static int walk(const char *src_root, const char *out_root, const char *rel) {
             errors += walk(src_root, out_root, child_rel);
         } else if (S_ISREG(st.st_mode) && strcmp(path_ext(e->d_name), ".sws") == 0) {
             /* out path: same rel but .js */
-            char out_rel[8192];
+            char out_rel[MAXPATH];
             snprintf(out_rel, sizeof(out_rel), "%s", child_rel);
             size_t n = strlen(out_rel);
             out_rel[n - 4] = '\0'; /* strip .sws */
             strncat(out_rel, ".js", sizeof(out_rel) - strlen(out_rel) - 1);
 
-            char out_path[8192];
+            char out_path[MAXPATH];
             snprintf(out_path, sizeof(out_path), "%s/%s", out_root, out_rel);
             mkdir_p(out_root);
             errors += compile_file(full, out_path);
@@ -240,7 +246,7 @@ int main(int argc, char **argv) {
     }
 
     if (S_ISREG(st.st_mode)) {
-        char derived[8192];
+        char derived[MAXPATH];
         if (!out) {
             derive_js_path(src, derived, sizeof(derived));
             out = derived;

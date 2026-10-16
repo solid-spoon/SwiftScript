@@ -479,7 +479,7 @@ static Node *parse_class(P *p) {
             fld->sval = xstrdup(fkw->value);
             fld->name = xstrdup(fid->value);
             fld->type = parse_type(p);
-            if (match_op(p, "=")) parse_expr(p, 0, 0);
+            if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
             match_op(p, ";");
             list_push(n->fields, fld);
         } else if (check_kw(p, "init")) {
@@ -799,6 +799,18 @@ static const struct { const char *op; double prec; } PREC[] = {
 static double get_prec(const char *op) {
     for (int i = 0; PREC[i].op; i++) if (strcmp(PREC[i].op, op) == 0) return PREC[i].prec;
     return -1;
+}
+
+static int is_lvalue(Node *n) {
+    if (!n) return 0;
+    switch (n->kind) {
+    case N_ID:
+    case N_MEMBER:
+    case N_INDEX:
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 static int is_assign_op(const char *op) {
@@ -1158,6 +1170,10 @@ static Node *parse_expr(P *p, double min_prec, int no_trailing) {
     }
     if (min_prec == 0 && check_op(p, "=")) {
         Token *eq = next_tok(p);
+        if (!is_lvalue(left)) {
+            p_err(p, eq->line, eq->col,
+                  "Левый операнд присваивания не является lvalue");
+        }
         Node *n = node_new(N_ASSIGN, eq->line, eq->col);
         n->a = left;
         n->op = xstrdup("=");
@@ -1166,6 +1182,10 @@ static Node *parse_expr(P *p, double min_prec, int no_trailing) {
     } else if (min_prec == 0 && peek(p,0)->type == T_OP && peek(p,0)->value &&
                is_assign_op(peek(p,0)->value)) {
         Token *eq = next_tok(p);
+        if (!is_lvalue(left)) {
+            p_err(p, eq->line, eq->col,
+                  "Левый операнд присваивания не является lvalue");
+        }
         Node *n = node_new(N_ASSIGN, eq->line, eq->col);
         n->a = left;
         n->op = xstrdup(eq->value);

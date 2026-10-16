@@ -66,7 +66,14 @@ TokenList *tokenize(const char *src, SSError *err) {
         if (c == '/' && i + 1 < n && src[i+1] == '*') {
             ADV(2);
             while (i < n && !(src[i] == '*' && i + 1 < n && src[i+1] == '/')) ADV(1);
-            if (i < n) ADV(2);
+            if (i >= n) {
+                if (err) { err->line = sl; err->col = sc;
+                    snprintf(err->msg, sizeof(err->msg),
+                             "Незакрытый блочный комментарий"); }
+                free_tokens(toks);
+                return NULL;
+            }
+            ADV(2);
             continue;
         }
 
