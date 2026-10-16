@@ -42,6 +42,11 @@ static void tl_push(TokenList *t, TokType type, char *value, double num, int lin
 }
 
 TokenList *tokenize(const char *src, SSError *err) {
+    if (!src) {
+        if (err) { err->line = 1; err->col = 1;
+            snprintf(err->msg, sizeof(err->msg), "Empty input"); }
+        return NULL;
+    }
     TokenList *toks = xcalloc(1, sizeof(TokenList));
     size_t n = strlen(src);
     size_t i = 0;
@@ -79,11 +84,108 @@ TokenList *tokenize(const char *src, SSError *err) {
 
         if (isdigit((unsigned char)c)) {
             size_t s = i;
-            while (i < n && (isdigit((unsigned char)src[i]) || src[i] == '_')) ADV(1);
-            if (i < n && src[i] == '.' && i + 1 < n && isdigit((unsigned char)src[i+1])) {
-                ADV(1);
-                while (i < n && (isdigit((unsigned char)src[i]) || src[i] == '_')) ADV(1);
+            int base = 10;
+            const char *basename = NULL;
+
+            /* 0x / 0b / 0o */
+            if (c == '0' && i + 1 < n) {
+                char c1 = src[i+1];
+                if (c1 == 'x' || c1 == 'X') { base = 16; basename = "hex"; }
+                else if (c1 == 'b' || c1 == 'B') { base = 2;  basename = "binary"; }
+                else if (c1 == 'o' || c1 == 'O') { base = 8;  basename = "octal"; }
+                if (base != 10) ADV(2);
             }
+
+            if (base != 10) {
+                size_t digits_start = i;
+                int digit_count = 0;
+                int prev_underscore = 0;
+                while (i < n) {
+                    char ch = src[i];
+                    if (ch == '_') {
+                        if (digit_count == 0 || prev_underscore) break;
+                        prev_underscore = 1;
+                        ADV(1);
+                        continue;
+                    }
+                    int is_digit = 0;
+                    if (base == 16) is_digit = isxdigit((unsigned char)ch);
+                    else if (base == 2) is_digit = (ch == '0' || ch == '1');
+                    else if (base == 8) is_digit = (ch >= '0' && ch <= '7');
+                    if (!is_digit) break;
+                    prev_underscore = 0;
+                    digit_count++;
+                    ADV(1);
+                }
+                if (digit_count == 0 || prev_underscore) {
+                    if (err) { err->line = sl; err->col = sc;
+                        snprintf(err->msg, sizeof(err->msg),
+                                 "Некорректный %s литерал", basename); }
+                    free_tokens(toks);
+                    return NULL;
+                }
+                char *raw = xstrndup(src + digits_start, i - digits_start);
+                size_t k = 0;
+                for (size_t j = 0; raw[j]; j++) if (raw[j] != '_') raw[k++] = raw[j];
+                raw[k] = '\0';
+                double val = (double)strtoll(raw, NULL, base);
+                free(raw);
+                tl_push(toks, T_NUM, NULL, val, sl, sc);
+                continue;
+            }
+
+            /* [digits] [. digits] [ (e|E) [+|-] digits ] */
+            int prev_underscore = 0;
+            int digit_count = 0;
+            while (i < n) {
+                char ch = src[i];
+                if (ch == '_') {
+                    if (digit_count == 0 || prev_underscore) break;
+                    prev_underscore = 1;
+                    ADV(1);
+                    continue;
+                }
+                if (!isdigit((unsigned char)ch)) break;
+                prev_underscore = 0;
+                digit_count++;
+                ADV(1);
+            }
+            if (prev_underscore) {
+                i--; col--;
+            }
+
+            if (i < n && src[i] == '.' && i + 1 < n &&
+                isdigit((unsigned char)src[i+1])) {
+                ADV(1);
+                prev_underscore = 0;
+                while (i < n) {
+                    char ch = src[i];
+                    if (ch == '_') {
+                        if (prev_underscore) break;
+                        prev_underscore = 1;
+                        ADV(1);
+                        continue;
+                    }
+                    if (!isdigit((unsigned char)ch)) break;
+                    prev_underscore = 0;
+                    ADV(1);
+                }
+            }
+
+            if (i < n && (src[i] == 'e' || src[i] == 'E')) {
+                size_t save = i;
+                int save_line = line, save_col = col;
+                ADV(1);
+                if (i < n && (src[i] == '+' || src[i] == '-')) ADV(1);
+                if (i < n && isdigit((unsigned char)src[i])) {
+                    while (i < n && isdigit((unsigned char)src[i])) ADV(1);
+                } else {
+                    i = save;
+                    line = save_line;
+                    col = save_col;
+                }
+            }
+
             char *raw = xstrndup(src + s, i - s);
             size_t k = 0;
             for (size_t j = 0; raw[j]; j++) if (raw[j] != '_') raw[k++] = raw[j];
@@ -94,7 +196,7 @@ TokenList *tokenize(const char *src, SSError *err) {
             continue;
         }
 
-        if (c == '"' || c == '\'') {
+        if (c == '"') {
             char q = c;
             ADV(1);
             StrBuf sb; sb_init(&sb);
@@ -111,6 +213,7 @@ TokenList *tokenize(const char *src, SSError *err) {
             if (i >= n) {
                 if (err) { err->line = sl; err->col = sc;
                     snprintf(err->msg, sizeof(err->msg), "Незакрытая строка"); }
+                sb_free(&sb);
                 free_tokens(toks);
                 return NULL;
             }
@@ -152,7 +255,7 @@ TokenList *tokenize(const char *src, SSError *err) {
         }
 
         /* Односимвольные операторы */
-        if (strchr("+-*/%<>()[]{},:.=!?@_&|", c)) {
+        if (strchr("+-*/%<>()[]{},;:.=!?@_&|~^", (unsigned char)c)) {
             char buf[2] = { c, 0 };
             tl_push(toks, T_OP, xstrdup(buf), 0, sl, sc);
             ADV(1);
