@@ -1,10 +1,4 @@
-/* ============================================================
- *  SwiftScript — Apple-inspired playground
- *  Светлая и тёмная темы, нативный macOS-стиль
- * ============================================================ */
-
 :root {
-  /* Светлая тема (по умолчанию) */
   --bg: #f2f2f7;
   --bg-elev: rgba(255, 255, 255, 0.72);
   --bg-panel: #ffffff;
@@ -15,17 +9,14 @@
   --text-dim: #8e8e93;
   --text-bright: #000000;
 
-  /* Акцент (синий Apple) */
   --accent: #007aff;
   --accent-hover: #0a84ff;
   --accent-active: #0062cc;
 
-  /* Терминал */
   --err: #ff3b30;
   --warn: #ff9500;
   --ok: #34c759;
 
-  /* Синтаксис — Xcode Light */
   --syn-comment: #5d6c79;
   --syn-string: #c41a16;
   --syn-number: #1c00cf;
@@ -49,7 +40,6 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Тёмная тема */
     --bg: #1e1e1e;
     --bg-elev: rgba(37, 37, 38, 0.72);
     --bg-panel: #1e1e1e;
@@ -68,7 +58,6 @@
     --warn: #ffd60a;
     --ok: #30d158;
 
-    /* Синтаксис — Xcode Dark */
     --syn-comment: #6c7986;
     --syn-string: #fc6a5d;
     --syn-number: #d0bf69;
@@ -102,9 +91,6 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ============================================================
- *  Каркас
- * ============================================================ */
 .app {
   height: 100vh;
   display: grid;
@@ -112,9 +98,6 @@ body {
   background: var(--bg);
 }
 
-/* ============================================================
- *  Тулбар (как заголовок окна macOS)
- * ============================================================ */
 .toolbar {
   display: flex;
   align-items: center;
@@ -235,9 +218,6 @@ body {
   box-shadow: 0 1px 0 var(--border);
 }
 
-/* ============================================================
- *  Рабочая область
- * ============================================================ */
 .workspace {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -284,19 +264,19 @@ body {
   border-radius: 50%;
   flex-shrink: 0;
 }
+
 .dot-swift {
   background: #ff9f0a;
 }
+
 .dot-js {
   background: #ffd60a;
 }
+
 .dot-term {
   background: #30d158;
 }
 
-/* ============================================================
- *  CodeMirror — общий хром
- * ============================================================ */
 .pane .CodeMirror {
   flex: 1;
   height: auto;
@@ -309,6 +289,7 @@ body {
 .CodeMirror-lines {
   padding: 8px 0;
 }
+
 .CodeMirror pre.CodeMirror-line {
   padding: 0 14px;
 }
@@ -318,6 +299,7 @@ body {
   border-right: 1px solid var(--border-soft);
   padding-right: 0;
 }
+
 .CodeMirror-linenumber {
   color: var(--text-dim);
   padding: 0 12px 0 10px;
@@ -328,75 +310,84 @@ body {
   border-left: 2px solid var(--text);
   border-right: none;
 }
+
 .CodeMirror-selected,
 .CodeMirror-focused .CodeMirror-selected {
   background: rgba(10, 132, 255, 0.25) !important;
 }
+
 .CodeMirror-activeline-background {
   background: rgba(128, 128, 128, 0.06);
 }
+
 .CodeMirror-matchingbracket {
   color: var(--text-bright) !important;
   background: rgba(10, 132, 255, 0.2);
   outline: 1px solid var(--accent);
 }
 
-/* ============================================================
- *  Синтаксис
- * ============================================================ */
 .cm-s-default .cm-comment {
   color: var(--syn-comment);
   font-style: italic;
 }
+
 .cm-s-default .cm-string,
 .cm-s-default .cm-string-2 {
   color: var(--syn-string);
 }
+
 .cm-s-default .cm-number,
 .cm-s-default .cm-atom {
   color: var(--syn-number);
 }
+
 .cm-s-default .cm-keyword {
   color: var(--syn-keyword);
 }
+
 .cm-s-default .cm-builtin,
 .cm-s-default .cm-type {
   color: var(--syn-builtin);
 }
+
 .cm-s-default .cm-def {
   color: var(--syn-function);
 }
+
 .cm-s-default .cm-variable,
 .cm-s-default .cm-variable-2,
 .cm-s-default .cm-variable-3,
 .cm-s-default .cm-property {
   color: var(--syn-variable);
 }
+
 .cm-s-default .cm-operator {
   color: var(--syn-operator);
 }
+
 .cm-s-default .cm-punctuation,
 .cm-s-default .cm-bracket {
   color: var(--syn-punct);
 }
+
 .cm-s-default .cm-meta,
 .cm-s-default .cm-qualifier {
   color: var(--syn-builtin);
 }
+
 .cm-s-default .cm-tag {
   color: var(--syn-keyword);
 }
+
 .cm-s-default .cm-attribute {
   color: var(--syn-builtin);
 }
+
 .cm-s-default .cm-error {
   color: var(--err);
   background: transparent;
 }
 
-/* ============================================================
- *  Терминал
- * ============================================================ */
 #term {
   flex: 1;
   margin: 0;
@@ -408,40 +399,45 @@ body {
   word-break: break-word;
   background: var(--bg-panel);
 }
+
 #term .out {
   color: var(--text);
 }
+
 #term .err {
   color: var(--err);
 }
+
 #term .warn {
   color: var(--warn);
 }
+
 #term .dim {
   color: var(--text-dim);
   font-style: italic;
 }
 
-/* ============================================================
- *  Скроллбары — тонкие, в стиле macOS
- * ============================================================ */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
   background: rgba(128, 128, 128, 0.4);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(128, 128, 128, 0.6);
   background-clip: content-box;
 }
+
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
