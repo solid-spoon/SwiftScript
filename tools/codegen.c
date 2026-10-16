@@ -25,7 +25,7 @@ typedef struct {
     struct Pair { char *k; char *v; } *enum_cases;
     int enum_case_count, enum_case_cap;
     SS fields;
-    int in_method;
+    const char *self_prefix;   /* NULL | "_self" (struct) | "this" (class) */
     SS locals;
     SS break_stack;
     const char *switch_label;
@@ -55,6 +55,7 @@ static Ctx ctx_copy(Ctx *src) {
 static char *gen_stmt(Node *n, Ctx *ctx);
 static char *gen_expr(Node *n, Ctx *ctx);
 static char *gen_import(Node *n);
+static char *gen_class(Node *n, Ctx *ctx);
 
 static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
@@ -98,8 +99,8 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
             sb_put(&ps, ((Node*)n->params->items[i])->name);
         }
         Ctx inner = ctx_copy(ctx);
-        inner.fields.count = 0;  /* сбросить */
-        inner.in_method = 0;
+        inner.fields.count = 0;
+        inner.self_prefix = NULL;
         SS newlocals = {0};
         for (int i = 0; i < n->params->count; i++)
             ss_add(&newlocals, ((Node*)n->params->items[i])->name);
@@ -120,6 +121,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     }
     case N_STRUCT: return gen_struct(n, ctx);
     case N_ENUM:   return gen_enum(n, ctx);
+    case N_CLASS:  return gen_class(n, ctx);
     case N_RETURN:
         if (n->a) { char *e = gen_expr(n->a, ctx); sb_printf(&sb, "return %s;", e); free(e); }
         else sb_put(&sb, "return;");
@@ -570,7 +572,7 @@ static char *gen_struct(Node *n, Ctx *parent) {
         Node *m = n->methods->items[i];
         Ctx mctx = ctx_copy(parent);
         mctx.fields = members;
-        mctx.in_method = 1;
+        mctx.self_prefix = "_self";
         SS loc = {0};
         for (int j = 0; j < m->params->count; j++) ss_add(&loc, ((Node*)m->params->items[j])->name);
         mctx.locals = loc;
@@ -607,6 +609,49 @@ static char *gen_struct(Node *n, Ctx *parent) {
     return sb_take(&sb);
 }
 
+static char *gen_class(Node *n, Ctx *parent) {
+    SS members = {0};
+    for (int i = 0; i < n->fields->count; i++)
+        ss_add(&members, ((Node*)n->fields->items[i])->name);
+    for (int i = 0; i < n->methods->count; i++)
+        ss_add(&members, ((Node*)n->methods->items[i])->name);
+
+    StrBuf sb; sb_init(&sb);
+    if (n->exported) sb_put(&sb, "export ");
+    sb_printf(&sb, "class %s", n->name);
+    if (n->sval) sb_printf(&sb, " extends %s", n->sval);
+    sb_put(&sb, " {\n");
+
+    for (int i = 0; i < n->methods->count; i++) {
+        Node *m = n->methods->items[i];
+        Ctx mctx = ctx_copy(parent);
+        mctx.fields = members;
+        mctx.self_prefix = "this";
+        SS loc = {0};
+        for (int j = 0; j < m->params->count; j++)
+            ss_add(&loc, ((Node*)m->params->items[j])->name);
+        mctx.locals = loc;
+
+        const char *mname = (strcmp(m->name, "init") == 0) ? "constructor" : m->name;
+        sb_printf(&sb, "  %s(", mname);
+        for (int j = 0; j < m->params->count; j++) {
+            if (j) sb_put(&sb, ", ");
+            sb_put(&sb, ((Node*)m->params->items[j])->name);
+        }
+        sb_put(&sb, ") {\n");
+
+        for (int j = 0; j < m->body->count; j++) {
+            char *s = gen_stmt(m->body->items[j], &mctx);
+            sb_printf(&sb, "    %s\n", s);
+            free(s);
+        }
+        sb_put(&sb, "  }\n");
+    }
+
+    sb_put(&sb, "}");
+    return sb_take(&sb);
+}
+
 /* ---------- expr ---------- */
 static char *gen_call(Node *n, Ctx *ctx);
 static char *gen_closure(Node *n, Ctx *ctx);
@@ -638,10 +683,12 @@ static char *gen_expr(Node *n, Ctx *ctx) {
         sb_printf(&sb, "%g", n->num);
         return sb_take(&sb);
     case N_ID: {
-        if (n->name && strcmp(n->name, "self") == 0 && ctx->in_method) return xstrdup("_self");
+        if (n->name && strcmp(n->name, "self") == 0 && ctx->self_prefix)
+            return xstrdup(ctx->self_prefix);
         if (ctx->fields.count && ss_has(&ctx->fields, n->name) &&
             !(ctx->locals.count && ss_has(&ctx->locals, n->name))) {
-            sb_printf(&sb, "_self.%s", n->name);
+            const char *p = ctx->self_prefix ? ctx->self_prefix : "_self";
+            sb_printf(&sb, "%s.%s", p, n->name);
             return sb_take(&sb);
         }
         return xstrdup(n->name);
@@ -751,6 +798,20 @@ static char *gen_expr(Node *n, Ctx *ctx) {
 }
 
 static char *gen_call(Node *n, Ctx *ctx) {
+    /* super.init(...) → super(...) */
+    if (n->a->kind == N_MEMBER && n->a->a && n->a->a->kind == N_ID &&
+        n->a->a->name && strcmp(n->a->a->name, "super") == 0 &&
+        n->a->name && strcmp(n->a->name, "init") == 0) {
+        StrBuf sb; sb_init(&sb);
+        sb_put(&sb, "super(");
+        for (int i = 0; i < n->args->count; i++) {
+            if (i) sb_put(&sb, ", ");
+            char *v = gen_expr(((Node*)n->args->items[i])->a, ctx);
+            sb_put(&sb, v); free(v);
+        }
+        sb_putc(&sb, ')');
+        return sb_take(&sb);
+    }
     /* Foo(x: 1, y: 2) → Foo({x: 1, y: 2}) */
     if (n->a->kind == N_ID && ss_has(&ctx->struct_names, n->a->name)) {
         StrBuf sb; sb_init(&sb);
@@ -774,6 +835,7 @@ static char *gen_call(Node *n, Ctx *ctx) {
         do_swap = 1;
 
     StrBuf sb; sb_init(&sb);
+    if (n->is_new) sb_put(&sb, "new ");
     char *callee = gen_expr(n->a, ctx);
     sb_put(&sb, callee); free(callee);
     if (n->optional) sb_put(&sb, "?.");

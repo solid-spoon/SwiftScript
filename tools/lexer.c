@@ -5,12 +5,15 @@
 #include <stdio.h>
 
 static const char *KEYWORDS[] = {
-    "let","var","func","return","if","else","for","in","while","break","continue",
-    "struct","enum","class","protocol","extension","import","export","from","as","true","false","nil",
-    "self","init","guard","defer","throw","throws","try","catch","switch","case","default",
-    "where","inout","async","await","public","private","internal","static","lazy",
+    "as", "async", "await", "break", "case", "catch", "class", "continue", 
+    "default", "defer", "else", "enum", "export", "extends", "extension", 
+    "false", "for", "from", "func", "guard", "if", "implements", "import", 
+    "init", "inout", "in", "internal", "lazy", "let", "new", "nil", "override", 
+    "private", "protocol", "public", "return", "self", "static", "struct", 
+    "super", "switch", "throws", "throw", "true", "try", "var", "where", "while", 
     NULL
 };
+
 
 static int is_keyword(const char *w) {
     for (int i = 0; KEYWORDS[i]; i++)

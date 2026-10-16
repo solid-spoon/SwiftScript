@@ -1,41 +1,46 @@
-// ——— async / await ———
+// ——— class / new / extends / super ———
 
-async func double(n: Int) -> Int {
-    return n * 2
-}
+class Animal {
+    let name: String
 
-async func work() -> Int {
-    let a = await double(5)
-    let b = await double(10)
-    return a + b
-}
+    init(name: String) {
+        self.name = name
+    }
 
-work().then { result in
-    print("async result: \(result)")
-}
+    func speak() -> String {
+        return "..."
+    }
 
-// async closure
-let add = { async (a: Int, b: Int) -> Int in
-    return a + b
-}
-
-add(3, 4).then { s in
-    print("async closure: \(s)")
-}
-
-// ——— try / catch / throw ———
-
-func risky(n: Int) -> Int {
-    try {
-        if n < 0 {
-            throw Error("negative: \(n)")
-        }
-        return n * 2
-    } catch e {
-        print("caught: \(e.message)")
-        return -1
+    func describe() -> String {
+        return "\(self.name) says \(self.speak())"
     }
 }
 
-print(risky(5))
-print(risky(-3))
+class Dog extends Animal {
+    init(name: String) {
+        super.init(name: name)
+    }
+
+    override func speak() -> String {
+        return "Woof"
+    }
+}
+
+class Cat extends Animal {
+    init(name: String) {
+        super.init(name: name)
+    }
+
+    override func speak() -> String {
+        return "Meow"
+    }
+}
+
+let a = new Animal(name: "Generic")
+print(a.describe())
+
+let d = new Dog(name: "Rex")
+print(d.describe())
+
+let c = new Cat(name: "Whiskers")
+print(c.describe())

@@ -77,6 +77,15 @@ static Token *expect_id(P *p) {
     }
     return next_tok(p);
 }
+static Token *expect_member_name(P *p) {
+    Token *t = peek(p, 0);
+    if (t->type == T_ID) return next_tok(p);
+    if (t->type == T_KW && t->value && strcmp(t->value, "init") == 0)
+        return next_tok(p);
+    p_err(p, t->line, t->col, "Ожидалось имя поля, получено '%s'",
+          t->value ? t->value : "<eof>");
+    return NULL;
+}
 static Token *expect_str(P *p) {
     Token *t = peek(p, 0);
     if (t->type != T_STR) {
@@ -103,6 +112,8 @@ static Node *parse_guard(P *p);
 static Node *parse_try(P *p);
 static Node *parse_throw(P *p);
 static Node *parse_async_func(P *p);
+static Node *parse_class(P *p);
+static Node *parse_init(P *p);
 
 static Node *parse_program(P *p) {
     Node *n = node_new(N_PROGRAM, 1, 1);
@@ -190,6 +201,7 @@ static Node *parse_export(P *p) {
     else if (check_kw(p, "func"))                       decl = parse_func(p);
     else if (check_kw(p, "struct"))                     decl = parse_struct(p);
     else if (check_kw(p, "enum"))                       decl = parse_enum(p);
+    else if (check_kw(p, "class"))                      decl = parse_class(p);
     else if (check_kw(p, "async") &&
              peek(p, 1)->type == T_KW && peek(p, 1)->value &&
              strcmp(peek(p, 1)->value, "func") == 0)
@@ -298,6 +310,48 @@ static Node *parse_func(P *p) {
     return n;
 }
 
+static Node *parse_init(P *p) {
+    Token *kw = expect_kw(p, "init");
+    Node *n = node_new(N_FUNC, kw->line, kw->col);
+    n->name = xstrdup("init");
+    n->params = list_new();
+    expect_op(p, "(");
+    if (!check_op(p, ")")) {
+        for (;;) {
+            const char *label = NULL, *pname = NULL;
+            if (check_op(p, "_")) {
+                next_tok(p);
+                pname = xstrdup(expect_id(p)->value);
+            } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
+                label = xstrdup(next_tok(p)->value);
+                pname = xstrdup(expect_id(p)->value);
+            } else {
+                pname = xstrdup(expect_id(p)->value);
+                label = xstrdup(pname);
+            }
+            Node *pr = node_new(N_PARAM, kw->line, kw->col);
+            pr->name = pname;
+            pr->sval = label;
+            if (match_op(p, ":")) pr->type = parse_type(p);
+            list_push(n->params, pr);
+            if (!match_op(p, ",")) break;
+            if (check_op(p, ")")) break;
+        }
+    }
+    expect_op(p, ")");
+    expect_op(p, "{");
+    n->body = list_new();
+    while (!check_op(p, "}")) {
+        if (check_eof(p)) {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col, "Незакрытый init");
+        }
+        list_push(n->body, parse_stmt(p));
+    }
+    expect_op(p, "}");
+    return n;
+}
+
 static Node *parse_struct(P *p) {
     Token *kw = expect_kw(p, "struct");
     Token *id = expect_id(p);
@@ -382,6 +436,69 @@ static Node *parse_enum(P *p) {
         }
         list_push(n->cases, c);
         match_op(p, ";");
+    }
+    expect_op(p, "}");
+    return n;
+}
+
+static Node *parse_class(P *p) {
+    Token *kw = expect_kw(p, "class");
+    Token *id = expect_id(p);
+    Node *n = node_new(N_CLASS, kw->line, kw->col);
+    n->name = xstrdup(id->value);
+    n->fields = list_new();
+    n->methods = list_new();
+
+    if (match_kw(p, "extends")) {
+        Token *base = expect_id(p);
+        n->sval = xstrdup(base->value);
+    }
+
+    if (match_kw(p, "implements")) {
+        n->items = list_new();
+        while (1) {
+            Token *iface = expect_id(p);
+            Node *i = node_new(N_ID, iface->line, iface->col);
+            i->name = xstrdup(iface->value);
+            list_push(n->items, i);
+            if (!match_op(p, ",")) break;
+        }
+    }
+
+    expect_op(p, "{");
+    while (!check_op(p, "}")) {
+        if (check_eof(p)) {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col, "Незакрытый class");
+        }
+        if (check_kw(p, "let") || check_kw(p, "var")) {
+            Token *fkw = next_tok(p);
+            Token *fid = expect_id(p);
+            expect_op(p, ":");
+            Node *fld = node_new(N_FIELD, fkw->line, fkw->col);
+            fld->sval = xstrdup(fkw->value);
+            fld->name = xstrdup(fid->value);
+            fld->type = parse_type(p);
+            if (match_op(p, "=")) parse_expr(p, 0, 0);
+            match_op(p, ";");
+            list_push(n->fields, fld);
+        } else if (check_kw(p, "init")) {
+            list_push(n->methods, parse_init(p));
+        } else if (check_kw(p, "override")) {
+            next_tok(p);
+            if (!check_kw(p, "func")) {
+                Token *g = peek(p, 0);
+                p_err(p, g->line, g->col, "После override ожидался func");
+            }
+            list_push(n->methods, parse_func(p));
+        } else if (check_kw(p, "func")) {
+            list_push(n->methods, parse_func(p));
+        } else {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col,
+                  "В class ожидалось поле, init, func или override, получено '%s'",
+                  g->value ? g->value : "<eof>");
+        }
     }
     expect_op(p, "}");
     return n;
@@ -628,6 +745,7 @@ static Node *parse_stmt(P *p) {
     if (check_kw(p, "func")) return parse_func(p);
     if (check_kw(p, "struct")) return parse_struct(p);
     if (check_kw(p, "enum")) return parse_enum(p);
+    if (check_kw(p, "class")) return parse_class(p);
     if (check_kw(p, "switch")) {
         Node *n = node_new(N_EXPR_STMT, peek(p,0)->line, peek(p,0)->col);
         n->a = parse_switch(p);
@@ -713,6 +831,11 @@ static List *parse_args(P *p) {
 }
 
 static Node *parse_postfix(P *p, int no_trailing) {
+    int is_new = 0;
+    if (check_kw(p, "new")) {
+        next_tok(p);
+        is_new = 1;
+    }
     Node *node = NULL;
     /* parsePrimary inline */
     {
@@ -896,16 +1019,49 @@ static Node *parse_postfix(P *p, int no_trailing) {
         } else if (t->type == T_KW && t->value && strcmp(t->value, "self") == 0) {
             next_tok(p);
             node = id_node("self", t->line, t->col);
+        } else if (t->type == T_KW && t->value && strcmp(t->value, "super") == 0) {
+            next_tok(p);
+            node = id_node("super", t->line, t->col);
         } else {
             p_err(p, t->line, t->col, "Неожиданный токен '%s'",
                   t->value ? t->value : "<eof>");
         }
     }
 
+    if (is_new) {
+        while (1) {
+            if (check_op(p, ".")) {
+                next_tok(p);
+                Token *id = expect_id(p);
+                Node *m = node_new(N_MEMBER, id->line, id->col);
+                m->a = node; m->name = xstrdup(id->value); m->optional = 0;
+                node = m;
+            } else if (check_op(p, "?.")) {
+                next_tok(p);
+                Token *id = expect_id(p);
+                Node *m = node_new(N_MEMBER, id->line, id->col);
+                m->a = node; m->name = xstrdup(id->value); m->optional = 1;
+                node = m;
+            } else if (check_op(p, "(")) {
+                next_tok(p);
+                Node *c = node_new(N_CALL, 1, 1);
+                c->a = node;
+                c->args = parse_args(p);
+                expect_op(p, ")");
+                c->is_new = 1;
+                node = c;
+                break;
+            } else {
+                Token *g = peek(p, 0);
+                p_err(p, g->line, g->col, "Ожидался вызов (...) после new");
+            }
+        }
+    }
+
     while (1) {
         if (check_op(p, ".")) {
             next_tok(p);
-            Token *id = expect_id(p);
+            Token *id = expect_member_name(p);
             Node *m = node_new(N_MEMBER, id->line, id->col);
             m->a = node;
             m->name = xstrdup(id->value);
@@ -913,7 +1069,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
             node = m;
         } else if (check_op(p, "?.")) {
             next_tok(p);
-            Token *id = expect_id(p);
+            Token *id = expect_member_name(p);
             Node *m = node_new(N_MEMBER, id->line, id->col);
             m->a = node;
             m->name = xstrdup(id->value);
