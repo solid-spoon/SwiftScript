@@ -80,6 +80,19 @@ static const char *path_ext(const char *p) {
     return dot ? dot : "";
 }
 
+/* foo.sws → foo.js,  foo → foo.js */
+static void derive_js_path(const char *src, char *out, size_t cap) {
+    snprintf(out, cap, "%s", src);
+    size_t n = strlen(out);
+    if (n >= 4 && strcmp(out + n - 4, ".sws") == 0) {
+        out[n - 3] = 'j';
+        out[n - 2] = 's';
+        out[n - 1] = '\0';
+    } else {
+        strncat(out, ".js", cap - n - 1);
+    }
+}
+
 static int compile_file(const char *src_path, const char *out_path) {
     char *src = read_file(src_path);
     if (!src) { fprintf(stderr, "swsc: cannot read %s\n", src_path); return 1; }
@@ -165,15 +178,68 @@ static int walk(const char *src_root, const char *out_root, const char *rel) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 5 || strcmp(argv[1], "build") != 0 || strcmp(argv[3], "-o") != 0) {
+    if (argc < 3 || strcmp(argv[1], "build") != 0) {
         fprintf(stderr,
-            "usage: %s build <src_dir> -o <out_dir>\n"
-            "  Compiles every .sws file under <src_dir> into .js preserving structure.\n",
+            "usage: %s build <path> [-o <out>]\n"
+            "  Compile every .sws file under <path> into .js.\n"
+            "  Without -o, output goes next to the input (.sws -> .js).\n",
             argv[0]);
         return 2;
     }
+
     const char *src = argv[2];
-    const char *out = argv[4];
+    const char *out = NULL;
+
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "swsc: -o requires an argument\n");
+                return 2;
+            }
+            out = argv[++i];
+        } else {
+            fprintf(stderr, "swsc: unknown argument '%s'\n", argv[i]);
+            return 2;
+        }
+    }
+
+    struct stat st;
+    if (stat(src, &st) != 0) {
+        fprintf(stderr, "swsc: cannot access %s: %s\n", src, strerror(errno));
+        return 2;
+    }
+
+    if (S_ISREG(st.st_mode)) {
+        char derived[8192];
+        if (!out) {
+            derive_js_path(src, derived, sizeof(derived));
+            out = derived;
+        } else {
+            int out_is_dir = 0;
+            struct stat ost;
+            if (stat(out, &ost) == 0 && S_ISDIR(ost.st_mode)) out_is_dir = 1;
+            else {
+                size_t ol = strlen(out);
+                if (ol > 0 && out[ol - 1] == '/') out_is_dir = 1;
+            }
+            if (out_is_dir) {
+                const char *base = strrchr(src, '/');
+                base = base ? base + 1 : src;
+                char base_js[4096];
+                derive_js_path(base, base_js, sizeof(base_js));
+                snprintf(derived, sizeof(derived), "%s/%s", out, base_js);
+                out = derived;
+            }
+        }
+        return compile_file(src, out) ? 1 : 0;
+    }
+
+    if (!S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "swsc: %s is neither a file nor a directory\n", src);
+        return 2;
+    }
+
+    if (!out) out = src;
     mkdir_p(out);
     int rc = walk(src, out, "");
     if (rc) fprintf(stderr, "swsc: %d error(s)\n", rc);
