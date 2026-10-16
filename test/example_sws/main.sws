@@ -1,6 +1,41 @@
-import { square, PI } from "./lib/math.sws"
-import * as math from "./lib/math.sws"
+// ——— async / await ———
 
-print(square(5))
-print(PI)
-print(math.square(3))
+async func double(n: Int) -> Int {
+    return n * 2
+}
+
+async func work() -> Int {
+    let a = await double(5)
+    let b = await double(10)
+    return a + b
+}
+
+work().then { result in
+    print("async result: \(result)")
+}
+
+// async closure
+let add = { async (a: Int, b: Int) -> Int in
+    return a + b
+}
+
+add(3, 4).then { s in
+    print("async closure: \(s)")
+}
+
+// ——— try / catch / throw ———
+
+func risky(n: Int) -> Int {
+    try {
+        if n < 0 {
+            throw Error("negative: \(n)")
+        }
+        return n * 2
+    } catch e {
+        print("caught: \(e.message)")
+        return -1
+    }
+}
+
+print(risky(5))
+print(risky(-3))

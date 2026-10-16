@@ -100,6 +100,9 @@ static Node *parse_import(P *p);
 static Node *parse_export(P *p);
 static Node *parse_one_binding(P *p);
 static Node *parse_guard(P *p);
+static Node *parse_try(P *p);
+static Node *parse_throw(P *p);
+static Node *parse_async_func(P *p);
 
 static Node *parse_program(P *p) {
     Node *n = node_new(N_PROGRAM, 1, 1);
@@ -187,6 +190,10 @@ static Node *parse_export(P *p) {
     else if (check_kw(p, "func"))                       decl = parse_func(p);
     else if (check_kw(p, "struct"))                     decl = parse_struct(p);
     else if (check_kw(p, "enum"))                       decl = parse_enum(p);
+    else if (check_kw(p, "async") &&
+             peek(p, 1)->type == T_KW && peek(p, 1)->value &&
+             strcmp(peek(p, 1)->value, "func") == 0)
+        decl = parse_async_func(p);
     else {
         Token *g = peek(p, 0);
         p_err(p, g->line, g->col,
@@ -573,9 +580,50 @@ static Node *parse_guard(P *p) {
     return n;
 }
 
+static Node *parse_try(P *p) {
+    Token *kw = expect_kw(p, "try");
+    if (!check_op(p, "{")) {
+        p_err(p, kw->line, kw->col, "После try ожидался блок {");
+    }
+    Node *n = node_new(N_TRY, kw->line, kw->col);
+    n->a = parse_block(p);
+    if (!match_kw(p, "catch")) {
+        p_err(p, kw->line, kw->col, "Ожидался catch после try");
+    }
+    if (check_id_tok(p)) {
+        Token *id = next_tok(p);
+        n->name = xstrdup(id->value);
+    }
+    n->b = parse_block(p);
+    return n;
+}
+
+static Node *parse_throw(P *p) {
+    Token *kw = expect_kw(p, "throw");
+    Node *n = node_new(N_THROW, kw->line, kw->col);
+    n->a = parse_expr(p, 0, 0);
+    match_op(p, ";");
+    return n;
+}
+
+static Node *parse_async_func(P *p) {
+    Token *kw = expect_kw(p, "async");
+    Node *n = parse_func(p);
+    n->is_async = 1;
+    n->line = kw->line;
+    n->col = kw->col;
+    return n;
+}
+
 static Node *parse_stmt(P *p) {
     if (check_kw(p, "import")) return parse_import(p);
     if (check_kw(p, "export")) return parse_export(p);
+    if (check_kw(p, "try"))   return parse_try(p);
+    if (check_kw(p, "throw")) return parse_throw(p);
+    if (check_kw(p, "async") &&
+        peek(p, 1)->type == T_KW && peek(p, 1)->value &&
+        strcmp(peek(p, 1)->value, "func") == 0)
+        return parse_async_func(p);
     if (check_kw(p, "let") || check_kw(p, "var")) return parse_let(p);
     if (check_kw(p, "func")) return parse_func(p);
     if (check_kw(p, "struct")) return parse_struct(p);
@@ -816,8 +864,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
             else node = tuple;
         } else if (check_op(p, "{")) {
             node = parse_closure(p);
-        } else if (check_kw(p, "func")) {
-            /* named-less closure form: func(params) { body } */
+                } else if (check_kw(p, "func")) {
             next_tok(p);
             expect_op(p, "(");
             List *params = list_new();
@@ -833,6 +880,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
                 }
             }
             expect_op(p, ")");
+            int is_async_fn = match_kw(p, "async");
             if (match_op(p, "->")) parse_type(p);
             expect_op(p, "{");
             List *body = list_new();
@@ -841,6 +889,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
             node = node_new(N_CLOSURE, t->line, t->col);
             node->params = params;
             node->body = body;
+            node->is_async = is_async_fn;
         } else if (t->type == T_ID) {
             next_tok(p);
             node = id_node(t->value, t->line, t->col);
@@ -918,12 +967,6 @@ static Node *parse_unary(P *p, int no_trailing) {
         n->a = parse_unary(p, no_trailing);
         return n;
     }
-    if (check_kw(p, "try")) {
-        next_tok(p);
-        Node *n = node_new(N_TRY, t->line, t->col);
-        n->a = parse_unary(p, no_trailing);
-        return n;
-    }
     if (check_kw(p, "await")) {
         next_tok(p);
         Node *n = node_new(N_AWAIT, t->line, t->col);
@@ -978,6 +1021,7 @@ static Node *parse_expr(P *p, double min_prec, int no_trailing) {
 
 static Node *parse_closure(P *p) {
     expect_op(p, "{");
+    int is_async_cl = match_kw(p, "async");
     int save = p->pos;
     List *params = NULL;
 
@@ -1049,6 +1093,7 @@ static Node *parse_closure(P *p) {
     Node *n = node_new(N_CLOSURE, 1, 1);
     n->params = params;
     n->body = list_new();
+    n->is_async = is_async_cl;
     while (!check_op(p, "}")) {
         if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Незакрытое замыкание"); }
         list_push(n->body, parse_stmt(p));

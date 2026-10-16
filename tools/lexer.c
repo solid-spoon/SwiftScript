@@ -7,7 +7,7 @@
 static const char *KEYWORDS[] = {
     "let","var","func","return","if","else","for","in","while","break","continue",
     "struct","enum","class","protocol","extension","import","export","from","as","true","false","nil",
-    "self","init","guard","defer","throws","try","catch","switch","case","default",
+    "self","init","guard","defer","throw","throws","try","catch","switch","case","default",
     "where","inout","async","await","public","private","internal","static","lazy",
     NULL
 };

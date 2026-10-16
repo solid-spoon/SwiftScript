@@ -113,6 +113,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
         char *pstr = sb_take(&ps);
         char *bstr = sb_take(&body);
         if (n->exported) sb_put(&sb, "export ");
+        if (n->is_async)  sb_put(&sb, "async ");
         sb_printf(&sb, "function %s(%s) {\n%s\n}", n->name, pstr, bstr);
         free(pstr); free(bstr);
         break;
@@ -158,6 +159,22 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
         char *b = gen_stmt(n->b, &inner);
         sb_printf(&sb, "for (const %s of %s) %s", n->name, src, b);
         free(src); free(b);
+        break;
+    }
+    case N_TRY: {
+        char *body = gen_stmt(n->a, ctx);
+        char *handler = gen_stmt(n->b, ctx);
+        const char *cvar = n->name ? n->name : "_e";
+        sb_printf(&sb, "try %s catch (%s) %s", body, cvar, handler);
+        free(body); free(handler);
+        break;
+    }
+    case N_THROW: {
+        if (n->a) {
+            char *e = gen_expr(n->a, ctx);
+            sb_printf(&sb, "throw %s;", e);
+            free(e);
+        } else sb_put(&sb, "throw;");
         break;
     }
     case N_BREAK: {
@@ -722,7 +739,6 @@ static char *gen_expr(Node *n, Ctx *ctx) {
         return sb_take(&sb);
     }
     case N_CLOSURE: return gen_closure(n, ctx);
-    case N_TRY: return gen_expr(n->a, ctx);
     case N_AWAIT: {
         char *a = gen_expr(n->a, ctx);
         sb_printf(&sb, "(await %s)", a); free(a);
@@ -844,7 +860,11 @@ static char *gen_closure(Node *n, Ctx *ctx) {
 
     char *body = block_returning(n->body, &inner);
     char *pstr = sb_take(&params);
-    sb_printf(&sb, "((%s) => { %s })", pstr, body);
+    if (n->is_async) {
+        sb_printf(&sb, "(async (%s) => { %s })", pstr, body);
+    } else {
+        sb_printf(&sb, "((%s) => { %s })", pstr, body);
+    }
     free(pstr); free(body);
     return sb_take(&sb);
 }

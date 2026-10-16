@@ -12,7 +12,7 @@ typedef enum {
     N_LIT, N_ID, N_ENUM_CASE, N_TEMPLATE,
     N_ARRAY, N_DICT, N_TUPLE, N_MEMBER, N_INDEX, N_CALL,
     N_FORCE, N_UNARY, N_BIN, N_TERNARY, N_ASSIGN, N_CLOSURE,
-    N_TRY, N_AWAIT,
+    N_TRY, N_THROW, N_AWAIT,
     N_TYPE_NAMED, N_TYPE_ARRAY, N_TYPE_TUPLE, N_TYPE_OPT,
     N_PAT_ENUM, N_PAT_BIND, N_PAT_WILD, N_PAT_LIT, N_PAT_RANGE, N_PAT_EXPR,
     N_PARAM, N_FIELD, N_ENUM_CASE_DECL, N_SWITCH_CASE,
@@ -31,6 +31,7 @@ struct Node {
     NodeKind kind;
     int      line, col;
     int is_bool;
+    int is_async;
 
     const char *name;
     const char *sval;
