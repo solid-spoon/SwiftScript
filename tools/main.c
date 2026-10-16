@@ -93,6 +93,24 @@ static void derive_js_path(const char *src, char *out, size_t cap) {
     }
 }
 
+static int has_module_syntax(const char *js) {
+    const char *p = js;
+    while (*p) {
+        const char *line = p;
+        while (*line == ' ' || *line == '\t') line++;
+        if (strncmp(line, "import ",   7) == 0 ||
+            strncmp(line, "import\t",   7) == 0 ||
+            strncmp(line, "export ",   7) == 0 ||
+            strncmp(line, "export\t",   7) == 0 ||
+            strncmp(line, "import{",    7) == 0 ||
+            strncmp(line, "export{",    7) == 0)
+            return 1;
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+    return 0;
+}
+
 static int compile_file(const char *src_path, const char *out_path) {
     char *src = read_file(src_path);
     if (!src) { fprintf(stderr, "swsc: cannot read %s\n", src_path); return 1; }
@@ -114,7 +132,13 @@ static int compile_file(const char *src_path, const char *out_path) {
     StrBuf out; sb_init(&out);
     sb_put(&out, SWIFTS_RUNTIME);
     sb_put(&out, "\n");
-    sb_put(&out, user_js);
+    if (has_module_syntax(user_js)) {
+        sb_put(&out, user_js);
+    } else {
+        sb_put(&out, "(() => {\n");
+        sb_put(&out, user_js);
+        sb_put(&out, "\n})();\n");
+    }
     sb_put(&out, "\n");
 
     /* ensure dir */
