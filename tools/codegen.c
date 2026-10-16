@@ -40,7 +40,7 @@ static void enum_add(Ctx *c, const char *case_name, const char *enum_name) {
     c->enum_case_count++;
 }
 static const char *enum_find(Ctx *c, const char *case_name) {
-    for (int i = 0; i < c->enum_case_count; i++)
+    for (int i = c->enum_case_count - 1; i >= 0; i--)
         if (strcmp(c->enum_cases[i].k, case_name) == 0) return c->enum_cases[i].v;
     return NULL;
 }
