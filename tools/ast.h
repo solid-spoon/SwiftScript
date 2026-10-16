@@ -7,6 +7,7 @@ typedef enum {
     N_PROGRAM,
     N_LET, N_FUNC, N_STRUCT, N_ENUM, N_RETURN, N_EXPR_STMT,
     N_BLOCK, N_IF, N_WHILE, N_FOR, N_BREAK, N_CONTINUE, N_SWITCH,
+    N_IMPORT,
     N_LIT, N_ID, N_ENUM_CASE, N_TEMPLATE,
     N_ARRAY, N_DICT, N_TUPLE, N_MEMBER, N_INDEX, N_CALL,
     N_FORCE, N_UNARY, N_BIN, N_TERNARY, N_ASSIGN, N_CLOSURE,
@@ -40,6 +41,7 @@ struct Node {
 
     int optional;
     int inclusive;
+    int exported;
 
     Node *a, *b, *c;
 

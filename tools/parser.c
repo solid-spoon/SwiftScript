@@ -77,6 +77,14 @@ static Token *expect_id(P *p) {
     }
     return next_tok(p);
 }
+static Token *expect_str(P *p) {
+    Token *t = peek(p, 0);
+    if (t->type != T_STR) {
+        p_err(p, t->line, t->col, "Ожидалась строка, получено '%s'",
+              t->value ? t->value : "<eof>");
+    }
+    return next_tok(p);
+}
 
 /* forward */
 static Node *parse_stmt(P *p);
@@ -85,6 +93,11 @@ static Node *parse_type(P *p);
 static Node *parse_closure(P *p);
 static Node *parse_switch(P *p);
 static Node *parse_if(P *p);
+static Node *parse_func(P *p);
+static Node *parse_struct(P *p);
+static Node *parse_enum(P *p);
+static Node *parse_import(P *p);
+static Node *parse_export(P *p);
 
 static Node *parse_program(P *p) {
     Node *n = node_new(N_PROGRAM, 1, 1);
@@ -103,6 +116,73 @@ static Node *parse_let(P *p) {
     if (match_op(p, "=")) n->a = parse_expr(p, 0, 0);
     match_op(p, ";");
     return n;
+}
+
+static Node *parse_import(P *p) {
+    Token *kw = expect_kw(p, "import");
+    Node *n = node_new(N_IMPORT, kw->line, kw->col);
+    n->items = list_new();
+
+    if (match_op(p, "*")) {
+        expect_kw(p, "as");
+        Token *alias = expect_id(p);
+        expect_kw(p, "from");
+        Token *src = expect_str(p);
+        n->op = xstrdup("namespace");
+        n->name = xstrdup(src->value);
+        Node *spec = node_new(N_PARAM, alias->line, alias->col);
+        spec->name = xstrdup(alias->value);
+        list_push(n->items, spec);
+    } else if (match_op(p, "{")) {
+        n->op = xstrdup("named");
+        if (!check_op(p, "}")) {
+            for (;;) {
+                Token *id = expect_id(p);
+                const char *alias = NULL;
+                if (match_kw(p, "as")) alias = xstrdup(expect_id(p)->value);
+                Node *spec = node_new(N_PARAM, id->line, id->col);
+                spec->name = xstrdup(id->value);
+                spec->sval = alias;
+                list_push(n->items, spec);
+                if (!match_op(p, ",")) break;
+                if (check_op(p, "}")) break;
+            }
+        }
+        expect_op(p, "}");
+        expect_kw(p, "from");
+        Token *src = expect_str(p);
+        n->name = xstrdup(src->value);
+    } else {
+        Token *id = expect_id(p);
+        expect_kw(p, "from");
+        Token *src = expect_str(p);
+        n->op = xstrdup("default");
+        n->name = xstrdup(src->value);
+        Node *spec = node_new(N_PARAM, id->line, id->col);
+        spec->name = xstrdup(id->value);
+        list_push(n->items, spec);
+    }
+
+    match_op(p, ";");
+    return n;
+}
+
+static Node *parse_export(P *p) {
+    Token *kw = expect_kw(p, "export");
+    Node *decl;
+    if      (check_kw(p, "let") || check_kw(p, "var")) decl = parse_let(p);
+    else if (check_kw(p, "func"))                       decl = parse_func(p);
+    else if (check_kw(p, "struct"))                     decl = parse_struct(p);
+    else if (check_kw(p, "enum"))                       decl = parse_enum(p);
+    else {
+        Token *g = peek(p, 0);
+        p_err(p, g->line, g->col,
+              "После export ожидалось let, var, func, struct или enum, получено '%s'",
+              g->value ? g->value : "<eof>");
+    }
+    (void)kw;
+    decl->exported = 1;
+    return decl;
 }
 
 static Node *parse_type(P *p) {
@@ -438,6 +518,8 @@ static Node *parse_if(P *p) {
 }
 
 static Node *parse_stmt(P *p) {
+    if (check_kw(p, "import")) return parse_import(p);
+    if (check_kw(p, "export")) return parse_export(p);
     if (check_kw(p, "let") || check_kw(p, "var")) return parse_let(p);
     if (check_kw(p, "func")) return parse_func(p);
     if (check_kw(p, "struct")) return parse_struct(p);

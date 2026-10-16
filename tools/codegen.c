@@ -53,6 +53,7 @@ static Ctx ctx_copy(Ctx *src) {
 /* forward */
 static char *gen_stmt(Node *n, Ctx *ctx);
 static char *gen_expr(Node *n, Ctx *ctx);
+static char *gen_import(Node *n);
 
 static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
@@ -77,10 +78,12 @@ static char *block_returning(List *stmts, Ctx *ctx);
 static char *gen_stmt(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
     switch (n->kind) {
+    case N_IMPORT: return gen_import(n);
     case N_LET: {
         const char *kw = (n->sval && strcmp(n->sval, "var") == 0) ? "let" : "const";
         char *v = n->a ? gen_expr(n->a, ctx) : xstrdup("undefined");
         if (ctx->locals.items) ss_add(&ctx->locals, n->name);
+        if (n->exported) sb_put(&sb, "export ");
         sb_printf(&sb, "%s %s = %s;", kw, n->name, v);
         free(v);
         break;
@@ -106,6 +109,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
         }
         char *pstr = sb_take(&ps);
         char *bstr = sb_take(&body);
+        if (n->exported) sb_put(&sb, "export ");
         sb_printf(&sb, "function %s(%s) {\n%s\n}", n->name, pstr, bstr);
         free(pstr); free(bstr);
         break;
@@ -205,8 +209,52 @@ static char *block_returning(List *stmts, Ctx *ctx) {
     return sb_take(&sb);
 }
 
+static char *gen_import(Node *n) {
+    StrBuf sb; sb_init(&sb);
+    sb_put(&sb, "import ");
+
+    if (strcmp(n->op, "namespace") == 0) {
+        Node *spec = n->items->items[0];
+        sb_printf(&sb, "* as %s", spec->name);
+    } else if (strcmp(n->op, "default") == 0) {
+        Node *spec = n->items->items[0];
+        sb_put(&sb, spec->name);
+    } else { /* named */
+        sb_put(&sb, "{ ");
+        for (int i = 0; i < n->items->count; i++) {
+            if (i) sb_put(&sb, ", ");
+            Node *spec = n->items->items[i];
+            sb_put(&sb, spec->name);
+            if (spec->sval) sb_printf(&sb, " as %s", spec->sval);
+        }
+        sb_put(&sb, " }");
+    }
+
+    /* .sws -> .js */
+    const char *path = n->name;
+    size_t plen = strlen(path);
+    StrBuf mod; sb_init(&mod);
+    if (plen >= 4 && strcmp(path + plen - 4, ".sws") == 0) {
+        sb_putn(&mod, path, plen - 4);
+        sb_put(&mod, ".js");
+    } else {
+        sb_put(&mod, path);
+    }
+
+    sb_put(&sb, " from \"");
+    for (const char *s = mod.buf; *s; s++) {
+        if (*s == '"' || *s == '\\') sb_putc(&sb, '\\');
+        sb_putc(&sb, *s);
+    }
+    sb_put(&sb, "\";");
+
+    sb_free(&mod);
+    return sb_take(&sb);
+}
+
 static char *gen_enum(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
+    if (n->exported) sb_put(&sb, "export ");
     sb_printf(&sb, "const %s = Object.freeze({\n", n->name);
     for (int i = 0; i < n->cases->count; i++) {
         Node *c = n->cases->items[i];
@@ -358,6 +406,7 @@ static char *gen_struct(Node *n, Ctx *parent) {
     for (int i = 0; i < n->methods->count; i++) ss_add(&members, ((Node*)n->methods->items[i])->name);
 
     StrBuf sb; sb_init(&sb);
+    if (n->exported) sb_put(&sb, "export ");
     sb_printf(&sb, "function %s(_args) {\n", n->name);
     if (n->fields->count) {
         sb_put(&sb, "  const { ");
