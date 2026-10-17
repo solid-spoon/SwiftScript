@@ -123,10 +123,6 @@ static int has_module_syntax(const char *js) {
     return 0;
 }
 
-/* ---------- shared pipeline: read + lex + parse ---------- */
-
-/* On success returns AST and writes malloc'd source into *out_src.
-   On failure prints a diagnostic to stderr and returns NULL. */
 static Node *parse_file(const char *src_path, char **out_src) {
     char *src = read_file(src_path);
     if (!src) {
@@ -151,9 +147,7 @@ static Node *parse_file(const char *src_path, char **out_src) {
     return ast;
 }
 
-/* ---------- swsc build ---------- */
-
-static int compile_file(const char *src_path, const char *out_path) {
+static int compile_file(const char *src_path, const char *out_path, int no_runtime) {
     char *src;
     Node *ast = parse_file(src_path, &src);
     if (!ast) return 1;
@@ -167,8 +161,10 @@ static int compile_file(const char *src_path, const char *out_path) {
     }
 
     StrBuf out; sb_init(&out);
-    sb_put(&out, SWIFTS_RUNTIME);
-    sb_put(&out, "\n");
+    if (!no_runtime) {
+        sb_put(&out, SWIFTS_RUNTIME);
+        sb_put(&out, "\n");
+    }
     if (has_module_syntax(user_js)) {
         sb_put(&out, user_js);
     } else {
@@ -193,10 +189,6 @@ static int compile_file(const char *src_path, const char *out_path) {
     return rc ? 1 : 0;
 }
 
-/* ---------- swsc check ---------- */
-
-/* Compiles in memory; runs codegen for its diagnostics.
-   Writes nothing. Returns 0 on success, 1 on diagnostic. */
 static int check_file(const char *src_path) {
     char *src;
     Node *ast = parse_file(src_path, &src);
@@ -214,12 +206,8 @@ static int check_file(const char *src_path) {
     return 0;
 }
 
-/* ---------- directory walk ---------- */
-
-/* check_only=1 -> check_file, out_root ignored.
-   check_only=0 -> compile_file with out_path derived from rel. */
 static int walk(const char *src_root, const char *out_root,
-                const char *rel, int check_only) {
+                const char *rel, int check_only, int no_runtime) {
     char src_dir[MAXPATH], out_dir[MAXPATH];
     if (*rel) {
         snprintf(src_dir, sizeof(src_dir), "%s/%s", src_root, rel);
@@ -252,7 +240,7 @@ static int walk(const char *src_root, const char *out_root,
         if (stat(full, &st) != 0) continue;
 
         if (S_ISDIR(st.st_mode)) {
-            errors += walk(src_root, out_root, child_rel, check_only);
+            errors += walk(src_root, out_root, child_rel, check_only, no_runtime);
         } else if (S_ISREG(st.st_mode) && strcmp(path_ext(e->d_name), ".sws") == 0) {
             if (check_only) {
                 errors += check_file(full);
@@ -266,7 +254,7 @@ static int walk(const char *src_root, const char *out_root,
                 char out_path[MAXPATH];
                 snprintf(out_path, sizeof(out_path), "%s/%s", out_root, out_rel);
                 mkdir_p(out_root);
-                errors += compile_file(full, out_path);
+                errors += compile_file(full, out_path, no_runtime);
             }
         }
     }
@@ -274,9 +262,6 @@ static int walk(const char *src_root, const char *out_root,
     return errors;
 }
 
-/* ---------- swsc run ---------- */
-
-/* Tries TMPDIR / TEMP / TMP / "." and probes for a free name. */
 static char *make_tmp_js(void) {
     const char *tmpdir = getenv("TMPDIR");
     if (!tmpdir || !*tmpdir) tmpdir = getenv("TEMP");
@@ -398,19 +383,23 @@ static int cmd_run(int argc, char **argv) {
     return rc;
 }
 
-/* ---------- main ---------- */
-
 static void usage(const char *argv0) {
     fprintf(stderr,
         "usage: %s <command> [options]\n"
-        "  build <path> [-o <out>]        compile .sws -> .js\n"
-        "  check <path>                   compile-only, report errors, no output\n"
-        "  run   <file.sws> [-- args...]  compile and run\n",
+        "  build <path> [-o <out>] [--no-runtime]  compile .sws -> .js\n"
+        "  check <path>                            compile-only, report errors\n"
+        "  run   <file.sws> [-- args...]           compile and run\n"
+        "  runtime                                 print the standard runtime JS\n",
         argv0);
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) { usage(argv[0]); return 2; }
+
+    if (strcmp(argv[1], "runtime") == 0) {
+        printf("%s", SWIFTS_RUNTIME);
+        return 0;
+    }
 
     if (strcmp(argv[1], "check") == 0) {
         if (argc < 3) { usage(argv[0]); return 2; }
@@ -433,7 +422,7 @@ int main(int argc, char **argv) {
             return 2;
         }
 
-        int rc = walk(src, NULL, "", 1);
+        int rc = walk(src, NULL, "", 1, 0);
         if (rc) fprintf(stderr, "swsc: %d error(s)\n", rc);
         return rc ? 1 : 0;
     }
@@ -449,6 +438,7 @@ int main(int argc, char **argv) {
 
     const char *src = argv[2];
     const char *out = NULL;
+    int no_runtime = 0;
 
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
@@ -457,6 +447,8 @@ int main(int argc, char **argv) {
                 return 2;
             }
             out = argv[++i];
+        } else if (strcmp(argv[i], "--no-runtime") == 0) {
+            no_runtime = 1;
         } else {
             fprintf(stderr, "swsc: unknown argument '%s'\n", argv[i]);
             return 2;
@@ -491,7 +483,7 @@ int main(int argc, char **argv) {
                 out = derived;
             }
         }
-        return compile_file(src, out) ? 1 : 0;
+        return compile_file(src, out, no_runtime) ? 1 : 0;
     }
 
     if (!S_ISDIR(st.st_mode)) {
@@ -501,7 +493,7 @@ int main(int argc, char **argv) {
 
     if (!out) out = src;
     mkdir_p(out);
-    int rc = walk(src, out, "", 0);
+    int rc = walk(src, out, "", 0, no_runtime);
     if (rc) fprintf(stderr, "swsc: %d error(s)\n", rc);
     return rc ? 1 : 0;
 }
