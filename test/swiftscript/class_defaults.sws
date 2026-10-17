@@ -1,0 +1,8 @@
+class Config {
+    let name: String = "default"
+    var debug: Bool = true
+}
+
+let c = new Config()
+print(c.name)
+print(c.debug)

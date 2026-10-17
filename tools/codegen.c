@@ -757,12 +757,37 @@ static char *gen_struct(Node *n, Ctx *parent) {
 
 static char *gen_class(Node *n, Ctx *parent) {
     SS members = {0};
+    StrBuf sb; sb_init(&sb);
+    
     for (int i = 0; i < n->fields->count; i++)
         ss_add(&members, ((Node*)n->fields->items[i])->name);
     for (int i = 0; i < n->methods->count; i++)
         ss_add(&members, ((Node*)n->methods->items[i])->name);
 
-    StrBuf sb; sb_init(&sb);
+    int has_init = 0;
+    for (int i = 0; i < n->methods->count; i++) {
+        if (strcmp(((Node*)n->methods->items[i])->name, "init") == 0) {
+            has_init = 1;
+            break;
+        }
+    }
+
+    if (!has_init && n->fields->count > 0) {
+        Ctx mctx = ctx_copy(parent);
+        mctx.fields = members;
+        mctx.self_prefix = "this";
+        sb_put(&sb, "  constructor() {\n");
+        for (int fi = 0; fi < n->fields->count; fi++) {
+            Node *fld = n->fields->items[fi];
+            if (fld->a) {
+                char *v = gen_expr(fld->a, &mctx);
+                sb_printf(&sb, "    this.%s = %s;\n", fld->name, v);
+                free(v);
+            }
+        }
+        sb_put(&sb, "  }\n");
+    }
+
     if (n->exported) sb_put(&sb, "export ");
     sb_printf(&sb, "class %s", n->name);
     if (n->sval) sb_printf(&sb, " extends %s", n->sval);

@@ -1,0 +1,20 @@
+=== Initial balances ===
+  ACC-1: 100
+  ACC-2: 50
+  ACC-3: 0
+
+=== Transfers ===
+✓ Transferred 30 from ACC-1 to ACC-2
+✗ Transfer failed: Need 200, only 70 available
+✗ No such account: ACC-9
+✗ Transfer failed: No funds at all (need 5)
+
+=== Savings interest ===
+After interest: ACC-2 = 84
+
+=== Final balances ===
+  ACC-1: 70
+  ACC-2: 84
+  ACC-3: 0
+
+ACC-99 not found, balance default: -1
