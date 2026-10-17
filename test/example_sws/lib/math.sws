@@ -1,5 +1,0 @@
-export func square(x: Int) -> Int {
-    return x * x
-}
-
-export let PI = 3.14
