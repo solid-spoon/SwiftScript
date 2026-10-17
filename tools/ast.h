@@ -29,6 +29,7 @@ struct Node {
     int is_bool;
     int is_async;
     int is_new;
+    int is_static;
 
     const char *name;
     const char *sval;

@@ -57,7 +57,6 @@ static int check_kw(P *p, const char *v) { return tok_is(peek(p, 0), "kw", v); }
 static int check_id_tok(P *p)            { return peek(p, 0)->type == T_ID; }
 static int check_eof(P *p)               { return peek(p, 0)->type == T_EOF; }
 
-/* '_' lexes as T_ID, not T_OP */
 static int check_underscore(P *p) {
     Token *t = peek(p, 0);
     return t->type == T_ID && t->value && strcmp(t->value, "_") == 0;
@@ -128,9 +127,25 @@ static Node *parse_one_binding(P *p);
 static Node *parse_guard(P *p);
 static Node *parse_try(P *p);
 static Node *parse_throw(P *p);
-static Node *parse_async_func(P *p);
 static Node *parse_class(P *p);
 static Node *parse_init(P *p);
+
+/* Consumes declaration modifiers. Returns 1 if any were consumed. */
+static int parse_decl_modifiers(P *p, int *is_static, int *is_async) {
+    int any = 0;
+    while (1) {
+        if (match_kw(p, "private") || match_kw(p, "public") ||
+            match_kw(p, "internal") || match_kw(p, "override") ||
+            match_kw(p, "lazy")) {
+            any = 1;
+            continue;
+        }
+        if (match_kw(p, "static")) { *is_static = 1; any = 1; continue; }
+        if (match_kw(p, "async"))  { *is_async  = 1; any = 1; continue; }
+        break;
+    }
+    return any;
+}
 
 static Node *parse_program(P *p) {
     Node *n = node_new(N_PROGRAM, 1, 1);
@@ -212,24 +227,31 @@ static Node *parse_import(P *p) {
 }
 
 static Node *parse_export(P *p) {
-    Token *kw = expect_kw(p, "export");
+    expect_kw(p, "export");
+
+    int is_static = 0, is_async = 0;
+    parse_decl_modifiers(p, &is_static, &is_async);
+
     Node *decl;
-    if      (check_kw(p, "let") || check_kw(p, "var")) decl = parse_let(p);
-    else if (check_kw(p, "func"))                       decl = parse_func(p);
-    else if (check_kw(p, "struct"))                     decl = parse_struct(p);
-    else if (check_kw(p, "enum"))                       decl = parse_enum(p);
-    else if (check_kw(p, "class"))                      decl = parse_class(p);
-    else if (check_kw(p, "async") &&
-             peek(p, 1)->type == T_KW && peek(p, 1)->value &&
-             strcmp(peek(p, 1)->value, "func") == 0)
-        decl = parse_async_func(p);
-    else {
+    if (check_kw(p, "let") || check_kw(p, "var")) {
+        decl = parse_let(p);
+        decl->is_static = is_static;
+    } else if (check_kw(p, "func")) {
+        decl = parse_func(p);
+        decl->is_static = is_static;
+        decl->is_async = is_async;
+    } else if (check_kw(p, "struct")) {
+        decl = parse_struct(p);
+    } else if (check_kw(p, "enum")) {
+        decl = parse_enum(p);
+    } else if (check_kw(p, "class")) {
+        decl = parse_class(p);
+    } else {
         Token *g = peek(p, 0);
         p_err(p, g->line, g->col,
               "After export expected let/var/func/struct/enum/class, got '%s'",
               g->value ? g->value : "<eof>");
     }
-    (void)kw;
     decl->exported = 1;
     return decl;
 }
@@ -380,6 +402,9 @@ static Node *parse_struct(P *p) {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col, "Unterminated struct");
         }
+        int is_static = 0, is_async = 0;
+        int mods = parse_decl_modifiers(p, &is_static, &is_async);
+
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
             Token *fid = expect_id(p);
@@ -388,10 +413,15 @@ static Node *parse_struct(P *p) {
             fld->sval = xstrdup(fkw->value);
             fld->name = xstrdup(fid->value);
             fld->type = parse_type(p);
+            fld->is_static = is_static;
+            if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
             list_push(n->fields, fld);
             match_op(p, ";");
         } else if (check_kw(p, "func")) {
-            list_push(n->methods, parse_func(p));
+            Node *m = parse_func(p);
+            m->is_static = is_static;
+            m->is_async = is_async;
+            list_push(n->methods, m);
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
@@ -485,6 +515,9 @@ static Node *parse_class(P *p) {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col, "Unterminated class");
         }
+        int is_static = 0, is_async = 0;
+        int mods = parse_decl_modifiers(p, &is_static, &is_async);
+
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
             Token *fid = expect_id(p);
@@ -493,29 +526,29 @@ static Node *parse_class(P *p) {
             fld->sval = xstrdup(fkw->value);
             fld->name = xstrdup(fid->value);
             fld->type = parse_type(p);
+            fld->is_static = is_static;
             if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
             match_op(p, ";");
             list_push(n->fields, fld);
         } else if (check_kw(p, "init")) {
-            list_push(n->methods, parse_init(p));
-        } else if (check_kw(p, "override")) {
-            next_tok(p);
-            if (check_kw(p, "init")) {
-                list_push(n->methods, parse_init(p));
-            } else if (check_kw(p, "func")) {
-                list_push(n->methods, parse_func(p));
-            } else {
-                Token *g = peek(p, 0);
-                p_err(p, g->line, g->col,
-                      "After override expected func or init, got '%s'",
-                      g->value ? g->value : "<eof>");
-            }
+            Node *m = parse_init(p);
+            m->is_static = is_static;
+            m->is_async = is_async;
+            list_push(n->methods, m);
         } else if (check_kw(p, "func")) {
-            list_push(n->methods, parse_func(p));
+            Node *m = parse_func(p);
+            m->is_static = is_static;
+            m->is_async = is_async;
+            list_push(n->methods, m);
+        } else if (mods) {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col,
+                  "After modifiers expected field, init, or func, got '%s'",
+                  g->value ? g->value : "<eof>");
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
-                  "In class expected field, init, func, or override, got '%s'",
+                  "In class expected field, init, or func, got '%s'",
                   g->value ? g->value : "<eof>");
         }
     }
@@ -683,7 +716,6 @@ static Node *parse_for(P *p) {
     return n;
 }
 
-/* Common parser for if-let / guard-let condition lists. */
 static void parse_let_cond_list(P *p, Node *n) {
     n->items = list_new();
     while (1) {
@@ -765,24 +797,37 @@ static Node *parse_throw(P *p) {
     return n;
 }
 
-static Node *parse_async_func(P *p) {
-    Token *kw = expect_kw(p, "async");
-    Node *n = parse_func(p);
-    n->is_async = 1;
-    n->line = kw->line;
-    n->col = kw->col;
-    return n;
-}
-
 static Node *parse_stmt(P *p) {
     if (check_kw(p, "import")) return parse_import(p);
     if (check_kw(p, "export")) return parse_export(p);
     if (check_kw(p, "try"))   return parse_try(p);
     if (check_kw(p, "throw")) return parse_throw(p);
-    if (check_kw(p, "async") &&
-        peek(p, 1)->type == T_KW && peek(p, 1)->value &&
-        strcmp(peek(p, 1)->value, "func") == 0)
-        return parse_async_func(p);
+
+    int is_static = 0, is_async = 0;
+    int mods = parse_decl_modifiers(p, &is_static, &is_async);
+
+    if (mods) {
+        if (check_kw(p, "func")) {
+            Node *n = parse_func(p);
+            n->is_static = is_static;
+            n->is_async = is_async;
+            return n;
+        }
+        if (check_kw(p, "let") || check_kw(p, "var")) {
+            Node *n = parse_let(p);
+            n->is_static = is_static;
+            return n;
+        }
+        if (check_kw(p, "struct")) return parse_struct(p);
+        if (check_kw(p, "enum"))   return parse_enum(p);
+        if (check_kw(p, "class"))  return parse_class(p);
+
+        Token *g = peek(p, 0);
+        p_err(p, g->line, g->col,
+              "After modifiers expected func/let/var/class/struct/enum, got '%s'",
+              g->value ? g->value : "<eof>");
+    }
+
     if (check_kw(p, "let") || check_kw(p, "var")) return parse_let(p);
     if (check_kw(p, "func")) return parse_func(p);
     if (check_kw(p, "struct")) return parse_struct(p);

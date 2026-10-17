@@ -8,7 +8,6 @@
 static int _sw_counter = 0;
 static int _let_bind_counter = 0;
 
-/* codegen diagnostics: set once, first error wins. */
 typedef struct {
     int has_err;
     int line, col;
@@ -61,7 +60,7 @@ typedef struct {
     struct Pair { char *k; char *v; } *enum_cases;
     int enum_case_count, enum_case_cap;
     SS fields;
-    const char *self_prefix;   /* NULL | "_self" | "this" */
+    const char *self_prefix;
     SS locals;
     SS break_stack;
     const char *switch_label;
@@ -88,11 +87,9 @@ static Ctx ctx_copy(Ctx *src) {
     c.locals      = ss_clone(&src->locals);
     c.break_stack = ss_clone(&src->break_stack);
     c.fields      = ss_clone(&src->fields);
-    /* struct_names and enum_cases are read-only */
     return c;
 }
 
-/* forward */
 static char *gen_stmt(Node *n, Ctx *ctx);
 static char *gen_expr(Node *n, Ctx *ctx);
 static char *gen_import(Node *n);
@@ -123,8 +120,6 @@ static void collect_decls(Node *prog, Ctx *ctx) {
         }
     }
 }
-
-/* ---------- stmt ---------- */
 
 static char *gen_stmt(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
@@ -269,7 +264,6 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
     int has_else = (n->c != NULL);
 
     sb_put(&sb, "{\n");
-
     if (has_else)
         sb_printf(&sb, "  let _ok%d = false;\n", id);
 
@@ -291,7 +285,6 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
         sb_printf(&sb, "  if (%s) {\n", c);
         free(c);
     }
-
     if (has_else) sb_printf(&sb, "    _ok%d = true;\n", id);
 
     if (n->b && n->b->kind == N_BLOCK) {
@@ -321,7 +314,6 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
             free(e);
         }
     }
-
     sb_put(&sb, "}");
     return sb_take(&sb);
 }
@@ -335,7 +327,6 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
     int id = ++_let_bind_counter;
     int count = n->items->count;
 
-    /* Generate else-code exactly once and reuse it. */
     char *else_code = gen_stmt(n->b, ctx);
 
     if (count > 0) {
@@ -371,7 +362,6 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
         sb_printf(&sb, "%s\n", else_code);
         free(c);
     }
-
     free(else_code);
     return sb_take(&sb);
 }
@@ -672,7 +662,9 @@ static char *gen_struct(Node *n, Ctx *parent) {
         for (int j = 0; j < m->params->count; j++) ss_add(&loc, ((Node*)m->params->items[j])->name);
         mctx.locals = loc;
 
-        sb_printf(&sb, "  _self.%s = function(", m->name);
+        sb_printf(&sb, "  _self.%s = ", m->name);
+        if (m->is_async) sb_put(&sb, "async ");
+        sb_put(&sb, "function(");
         for (int j = 0; j < m->params->count; j++) {
             if (j) sb_put(&sb, ", ");
             sb_put(&sb, ((Node*)m->params->items[j])->name);
@@ -696,6 +688,44 @@ static char *gen_struct(Node *n, Ctx *parent) {
         } else sb_put(&sb, "    return null;\n");
         sb_put(&sb, "  };\n");
     }
+
+    /* Static methods: emit as properties on the constructor function. */
+    for (int i = 0; i < n->methods->count; i++) {
+        Node *m = n->methods->items[i];
+        if (!m->is_static) continue;
+        Ctx mctx = ctx_copy(parent);
+        mctx.fields = members;
+        mctx.self_prefix = "_self";
+        SS loc = {0};
+        for (int j = 0; j < m->params->count; j++) ss_add(&loc, ((Node*)m->params->items[j])->name);
+        mctx.locals = loc;
+
+        sb_printf(&sb, "  %s.%s = ", n->name, m->name);
+        if (m->is_async) sb_put(&sb, "async ");
+        sb_put(&sb, "function(");
+        for (int j = 0; j < m->params->count; j++) {
+            if (j) sb_put(&sb, ", ");
+            sb_put(&sb, ((Node*)m->params->items[j])->name);
+        }
+        sb_put(&sb, ") {\n");
+        if (m->body->count) {
+            for (int j = 0; j < m->body->count; j++) {
+                Node *s = m->body->items[j];
+                int is_last = (j == m->body->count - 1);
+                if (is_last && s->kind == N_EXPR_STMT) {
+                    char *e = gen_expr(s->a, &mctx);
+                    sb_printf(&sb, "    return %s;\n", e);
+                    free(e);
+                } else {
+                    char *c = gen_stmt(s, &mctx);
+                    sb_printf(&sb, "    %s\n", c);
+                    free(c);
+                }
+            }
+        } else sb_put(&sb, "    return null;\n");
+        sb_put(&sb, "  };\n");
+    }
+
     int all_let = 1;
     for (int i = 0; i < n->fields->count; i++)
         if (strcmp(((Node*)n->fields->items[i])->sval, "let") != 0) all_let = 0;
@@ -728,8 +758,16 @@ static char *gen_class(Node *n, Ctx *parent) {
         mctx.locals = loc;
 
         int is_init = (strcmp(m->name, "init") == 0);
+        if (is_init && m->is_static) {
+            codegen_error(m->line, m->col, "static init is not supported");
+            continue;
+        }
         const char *mname = is_init ? "constructor" : m->name;
-        sb_printf(&sb, "  %s(", mname);
+
+        sb_put(&sb, "  ");
+        if (m->is_static) sb_put(&sb, "static ");
+        if (m->is_async)  sb_put(&sb, "async ");
+        sb_printf(&sb, "%s(", mname);
         for (int j = 0; j < m->params->count; j++) {
             if (j) sb_put(&sb, ", ");
             sb_put(&sb, ((Node*)m->params->items[j])->name);
@@ -766,8 +804,6 @@ static char *gen_class(Node *n, Ctx *parent) {
     sb_put(&sb, "}");
     return sb_take(&sb);
 }
-
-/* ---------- expr ---------- */
 
 static char *gen_expr(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
