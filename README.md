@@ -79,7 +79,7 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 - **Errors**: `throw`, `try { ... } catch (e) { ... }`, `throws` in signatures (ignored in JS)
 - **Lexer**: hex/binary/octal literals, exponent notation, `_` numeric separators
 - **Modifiers**: `private`, `public`, `internal`, `static`, `override`, `lazy` are parsed and handled (static works in classes and structs)
-- **VSCode Ecosystem**: [TextMate grammar](editors/vscode/) and a real [SwiftScript Explorer](examples/vscode-swiftscript-explorer/) extension written in SwiftScript itself.
+- **VSCode Ecosystem**: A fully-featured [SwiftScript Toolkit](editors/swiftscript-toolkit/) extension (syntax, snippets, outline, folding, hover) written in SwiftScript itself.
 
 ### Doesn't work yet
 
@@ -147,17 +147,21 @@ swsc run   <file.sws> [-- args...]
 
 ## VSCode extension
 
-We have two things for VSCode:
-1. **TextMate grammar** in [`editors/vscode/`](editors/vscode/) — syntax highlighting.
-2. **SwiftScript Explorer** in [`examples/vscode-swiftscript-explorer/`](examples/vscode-swiftscript-explorer/) — a fully working TreeView extension written in SwiftScript. It scans your workspace for `.sws` files and builds a nested tree of classes, structs, enums, functions, and local variables.
+The official VSCode extension is **[`editors/swiftscript-toolkit/`](editors/swiftscript-toolkit/)**. It is written entirely in SwiftScript and includes:
 
-To try the Explorer:
+1. **TextMate grammar** for syntax highlighting.
+2. **Snippets** for `func`, `class`, `iflet`, `vscmd`, etc.
+3. **Language features (LSP-lite)**: Outline (`Ctrl+Shift+O`), Folding (`Ctrl+Shift+[`), Hover descriptions, and basic Completion.
+
+To build and run the extension locally:
 ```bash
-./swsc build examples/vscode-swiftscript-explorer/src -o examples/vscode-swiftscript-explorer/out
-cd examples/vscode-swiftscript-explorer/
+./swsc build editors/swiftscript-toolkit/src -o editors/swiftscript-toolkit/out
+cd editors/swiftscript-toolkit/
 code .
 # press F5 → "Extension Development Host" opens with the SwiftScript panel
 ```
+
+*(Note: [`examples/vscode-swiftscript-explorer/`](examples/vscode-swiftscript-explorer/) is a separate, smaller example extension that demonstrates how to build a custom TreeView in SwiftScript).*
 
 ## Project layout
 
@@ -172,13 +176,13 @@ tools/               C source for the compiler
   util.[ch]          dynamic strings, memory helpers
   main.c             CLI, file walker, runtime prelude
 
+editors/
+  swiftscript-toolkit/    The official VSCode extension (grammar, snippets, LSP-lite)
+
 examples/
   bank.sws           classes, inheritance, throws, optionals
   todos/todo.sws     enums, structs, closures
-  vscode-swiftscript-explorer/  real VSCode extension written in SwiftScript
-
-editors/
-  vscode/            TextMate grammar
+  vscode-swiftscript-explorer/  example custom TreeView extension
 
 docs/                specification documents (aspirational, v2+)
 ```
