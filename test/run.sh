@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-set -e
 
 # Build the compiler first
-./build.sh > /dev/null
+if ! ./build.sh > /dev/null; then
+    echo "❌ Build failed!"
+    exit 1
+fi
 
 GOLDEN_DIR="test/golden"
 mkdir -p "$GOLDEN_DIR"
@@ -26,6 +28,14 @@ run_test() {
     # 2. Run and capture output
     local actual_out
     actual_out=$(./swsc run "$src_file" 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        echo "  ❌ FAIL: runtime error (exit code $exit_code)"
+        echo "$actual_out"
+        FAILED=1
+        return
+    fi
     
     # 3. Diff
     if [ ! -f "$expected_out" ]; then
@@ -46,7 +56,7 @@ for f in examples/bank/bank.sws examples/todos/todo.sws; do
     [ -f "$f" ] && run_test "$f"
 done
 
-# Test example_sws
+# Test example sws
 for f in test/swiftscript/*.sws; do
     [ -f "$f" ] && run_test "$f"
 done

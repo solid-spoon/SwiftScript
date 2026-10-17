@@ -772,6 +772,11 @@ static char *gen_class(Node *n, Ctx *parent) {
         }
     }
 
+    if (n->exported) sb_put(&sb, "export ");
+    sb_printf(&sb, "class %s", n->name);
+    if (n->sval) sb_printf(&sb, " extends %s", n->sval);
+    sb_put(&sb, " {\n");
+
     if (!has_init && n->fields->count > 0) {
         Ctx mctx = ctx_copy(parent);
         mctx.fields = members;
@@ -787,11 +792,6 @@ static char *gen_class(Node *n, Ctx *parent) {
         }
         sb_put(&sb, "  }\n");
     }
-
-    if (n->exported) sb_put(&sb, "export ");
-    sb_printf(&sb, "class %s", n->name);
-    if (n->sval) sb_printf(&sb, " extends %s", n->sval);
-    sb_put(&sb, " {\n");
 
     for (int i = 0; i < n->methods->count; i++) {
         Node *m = n->methods->items[i];
