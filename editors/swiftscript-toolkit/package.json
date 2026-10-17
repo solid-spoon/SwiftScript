@@ -1,22 +1,20 @@
 {
-  "name": "swiftscript",
-  "displayName": "SwiftScript",
-  "description": "Syntax, snippets, outline, folding, hover and completion for SwiftScript — written in SwiftScript",
-  "version": "0.2.0",
+  "name": "swiftscript-toolkit",
+  "displayName": "SwiftScript Toolkit",
+  "description": "Syntax, snippets, outline, folding, hover, completion and diagnostics for SwiftScript",
+  "version": "0.3.0",
   "publisher": "swiftscript",
   "license": "MIT",
   "icon": "icon.png",
-  "engines": {
-    "vscode": "^1.75.0"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/solid-spoon/SwiftScript"
   },
-  "categories": ["Programming Languages"],
+  "engines": { "vscode": "^1.75.0" },
   "main": "./out/extension.js",
   "type": "module",
   "activationEvents": ["onLanguage:swiftscript"],
+  "categories": ["Programming Languages"],
   "contributes": {
     "languages": [
       {
@@ -24,10 +22,7 @@
         "aliases": ["SwiftScript", "swiftscript", "sws"],
         "extensions": [".sws"],
         "configuration": "./language-configuration.json",
-        "icon": {
-          "light": "icon.png",
-          "dark": "icon.png"
-        }
+        "icon": { "light": "icon.png", "dark": "icon.png" }
       }
     ],
     "grammars": [
@@ -42,6 +37,16 @@
         "language": "swiftscript",
         "path": "./snippets/swiftscript.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "SwiftScript",
+      "properties": {
+        "swiftscript.compilerPath": {
+          "type": "string",
+          "default": "./swsc",
+          "description": "Path to the swsc compiler executable."
+        }
+      }
+    }
   }
 }

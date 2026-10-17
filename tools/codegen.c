@@ -122,21 +122,20 @@ static void collect_decls(Node *prog, Ctx *ctx) {
         Node *s = prog->stmts->items[i];
         if (s->name) ss_add(&ctx->globals, s->name); // let, var, func, struct, enum, class
         
+        if (s->kind == N_IMPORT) {
+            for (int j = 0; j < s->items->count; j++) {
+                Node *spec = s->items->items[j];
+                const char *name = spec->sval ? spec->sval : spec->name;
+                if (name) ss_add(&ctx->globals, name);
+            }
+        }
+
         if (s->kind == N_STRUCT) ss_add(&ctx->struct_names, s->name);
         if (s->kind == N_CLASS)  ss_add(&ctx->class_names, s->name);
         if (s->kind == N_ENUM) {
-            if (ctx->enum_count == ctx->enum_cap) {
-                ctx->enum_cap = ctx->enum_cap ? ctx->enum_cap * 2 : 8;
-                ctx->enums = xrealloc(ctx->enums, sizeof(EnumDef) * ctx->enum_cap);
-            }
-            EnumDef *def = &ctx->enums[ctx->enum_count++];
-            def->name = xstrdup(s->name);
-            memset(&def->cases, 0, sizeof(SS));
-
             for (int j = 0; j < s->cases->count; j++) {
                 Node *c = s->cases->items[j];
                 enum_add(ctx, c->name, s->name);
-                ss_add(&def->cases, c->name);
             }
         }
     }

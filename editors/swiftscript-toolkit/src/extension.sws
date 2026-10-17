@@ -1,6 +1,10 @@
-// SwiftScript — Language features for .sws files
+// SwiftScript Toolkit — Language features for .sws files
 
 import * as vscode from "vscode"
+import * as cp from "child_process"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 
 enum DeclKind {
     case classDecl
@@ -62,7 +66,7 @@ func findBlockEnd(lines: [String], start: Int) -> Int {
     var sawOpen = false
     var i = start
     while i < lines.length {
-        let code = stripComment(line: lines[i])
+        let code = stripComment(lines[i])
         let opens = countOccurrences(s: code, sub: "{")
         let closes = countOccurrences(s: code, sub: "}")
         if opens > 0 { sawOpen = true }
@@ -109,13 +113,7 @@ func detectDecl(raw: String, lineNo: Int) -> Any {
     let name = rawName.trim()
     if name.length == 0 { return nil }
 
-    return new Decl(
-        name: name,
-        kind: kind!,
-        line: lineNo,
-        endLine: lineNo,
-        signature: t
-    )
+    return new Decl(name: name, kind: kind!, line: lineNo, endLine: lineNo, signature: t)
 }
 
 func parseDecls(lines: [String]) -> [Decl] {
@@ -139,9 +137,7 @@ func parseDecls(lines: [String]) -> [Decl] {
             } else {
                 result.push(decl)
             }
-            if opens > closes {
-                stack.push(decl)
-            }
+            if opens > closes { stack.push(decl) }
         }
         i += 1
     }
@@ -164,17 +160,9 @@ func toVscodeSymbol(d: Decl) -> Any {
     let endPos = new vscode.Position(d.endLine, 1000)
     let range = new vscode.Range(startPos, endPos)
     let sel = new vscode.Range(startPos, startPos)
-    let sym = new vscode.DocumentSymbol(
-        d.name,
-        d.signature,
-        kindToVscode(kind: d.kind),
-        range,
-        sel
-    )
+    let sym = new vscode.DocumentSymbol(d.name, d.signature, kindToVscode(d.kind), range, sel)
     var ch: [Any] = []
-    for c in d.children {
-        ch.push(toVscodeSymbol(c))
-    }
+    for c in d.children { ch.push(toVscodeSymbol(c)) }
     sym.children = ch
     return sym
 }
@@ -183,12 +171,12 @@ func wordAt(line: String, col: Int) -> String {
     if col >= line.length { return "" }
     var start = col
     while start > 0 {
-        if !isIdentPart(charAt(s: line, i: start - 1)) { break }
+        if !isIdentPart(charAt(line, start - 1)) { break }
         start -= 1
     }
     var end = col
     while end < line.length {
-        if !isIdentPart(charAt(s: line, i: end)) { break }
+        if !isIdentPart(charAt(line, end)) { break }
         end += 1
     }
     return line.substring(start, end)
@@ -200,11 +188,9 @@ class SymbolProvider {
     func provideDocumentSymbols(doc: Any, token: Any) -> [Any] {
         let text = doc.getText()
         let lines = text.split("\n")
-        let decls = parseDecls(lines: lines)
+        let decls = parseDecls(lines)
         var result: [Any] = []
-        for d in decls {
-            result.push(toVscodeSymbol(d))
-        }
+        for d in decls { result.push(toVscodeSymbol(d)) }
         return result
     }
 }
@@ -222,10 +208,7 @@ class FoldingProvider {
             let opens = countOccurrences(s: code, sub: "{")
             let closes = countOccurrences(s: code, sub: "}")
             var j = 0
-            while j < opens {
-                stack.push(i)
-                j += 1
-            }
+            while j < opens { stack.push(i); j += 1 }
             j = 0
             while j < closes && stack.length > 0 {
                 let start = stack.pop()!
@@ -242,7 +225,6 @@ class FoldingProvider {
 
 class HoverProvider {
     let descriptions: Any
-
     init() {
         self.descriptions = [
             "let": "Immutable binding. Compiles to JS `const`.",
@@ -267,15 +249,12 @@ class HoverProvider {
             "extends": "Inheritance. Only for `class`."
         ]
     }
-
     func provideHover(doc: Any, position: Any, token: Any) -> Any {
         let line = doc.lineAt(position.line).text
-        let word = wordAt(line: line, col: position.character)
+        let word = wordAt(line, position.character)
         if word.length == 0 { return nil }
-
         let desc = self.descriptions[word]
         if desc == nil { return nil }
-
         return new vscode.Hover("**\(word)** — \(desc)")
     }
 }
@@ -316,11 +295,93 @@ class CompletionProvider {
     }
 }
 
+class DiagnosticManager {
+    let diagnosticCollection: Any
+    let tmpDir: String
+
+    init() {
+        self.diagnosticCollection = vscode.languages.createDiagnosticCollection("swiftscript")
+        self.tmpDir = os.tmpdir()
+    }
+
+    func checkDocument(doc: Any) {
+        if doc.languageId != "swiftscript" { return }
+        
+        let text = doc.getText()
+        let fileName = path.basename(doc.fileName)
+        let tmpFile = path.join(self.tmpDir, "swsc-\(fileName).sws")
+        
+        try {
+            fs.writeFileSync(tmpFile, text, "utf8")
+        } catch e {
+            return
+        }
+
+        let config = vscode.workspace.getConfiguration("swiftscript")
+        let compilerPath = config.get("compilerPath")
+        let cwd = vscode.workspace.workspaceFolders
+        if cwd == nil || cwd.length == 0 { return }
+        
+        let rootPath = cwd[0].uri.fsPath
+        let fullCompilerPath = path.join(rootPath, compilerPath)
+
+        cp.execFile(fullCompilerPath, ["check", tmpFile], ["cwd": rootPath], { err, stdout, stderr in
+            var diagnostics: [Any] = []
+            if stderr.length > 0 {
+                let lines = stderr.split("\n")
+                for line in lines {
+                    let parts = line.split(": ")
+                    if parts.length >= 2 {
+                        let loc = parts[0]
+                        var msg = parts[1]
+                        if parts.length > 2 {
+                            msg = parts.slice(1).join(": ")
+                        }
+                        
+                        let locParts = loc.split(":")
+                        if locParts.length >= 3 {
+                            let lineNum = Int(locParts[locParts.length - 2])
+                            let colNum = Int(locParts[locParts.length - 1])
+                            
+                            if lineNum != nil && colNum != nil {
+                                let pos = new vscode.Position(lineNum! - 1, colNum! - 1)
+                                let range = new vscode.Range(pos, pos)
+                                let diag = new vscode.Diagnostic(range, msg.trim(), vscode.DiagnosticSeverity.Error)
+                                diagnostics.push(diag)
+                            }
+                        }
+                    }
+                }
+            }
+            self.diagnosticCollection.set(doc.uri, diagnostics)
+            try { fs.unlinkSync(tmpFile) } catch e { }
+        })
+    }
+}
+
 /* ---------------- Entry ---------------- */
 
 export func activate(context: Any) {
     let sel = "swiftscript"
+    let manager = new DiagnosticManager()
 
+    // Functionality: diagnostics
+    context.subscriptions.push(manager.diagnosticCollection)
+
+    vscode.workspace.onDidChangeTextDocument({ event in
+        manager.checkDocument(event.document)
+    })
+    
+    vscode.workspace.onDidOpenTextDocument({ doc in
+        manager.checkDocument(doc)
+    })
+
+    // Check active editor on startup
+    if (vscode.window.activeTextEditor != nil) {
+        manager.checkDocument(vscode.window.activeTextEditor.document)
+    }
+
+    // Functionality: language features
     let sym = new SymbolProvider()
     context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider(sel, sym))
 
