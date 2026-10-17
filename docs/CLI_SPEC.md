@@ -1,407 +1,120 @@
 # CLI_SPEC.md
 
-Спецификация интерфейса командной строки SwiftScript. Документ описывает команды, флаги и поведение `swsc`. Если код и документ расходятся — это баг.
+Specification of the SwiftScript command-line interface. This document describes the exact behavior of `tools/main.c`. If the code and this document disagree, the code is the source of truth.
 
-## Обзор
+## Overview
 
-`swsc` — исполняемый файл, который компилирует `.sws` в `.js`. Работает как в режиме одиночного файла, так и в режиме проекта. Не имеет состояния, не хранит конфигурацию между запусками.
-
-**Имя:** `swsc` (SwiftScript Compiler).
-**Расположение:** в `PATH` или рядом с проектом.
-**Формат:** исполняемый файл. На v1 — скрипт на Node.js с shebang.
+`swsc` is a compiled C binary that transforms `.sws` files into `.js` files. It has no state, no configuration file, and no package manager. It works on a single file or recursively on a directory.
 
 ```
-swsc <command> [options] [arguments]
+swsc <command> [arguments]
 ```
 
-## Команды
+## Commands
 
 ### `swsc build <path> [-o <out>]`
 
-Компилирует файл или директорию.
+Compiles a file or directory.
 
 ```bash
 swsc build src/main.sws -o build/main.js
 swsc build src/ -o build/
 ```
 
-| Аргумент | Описание |
-|----------|----------|
-| `<path>` | Файл `.sws` или директория |
-| `-o, --out <out>` | Выходной файл или директория |
+| Argument | Description |
+|----------|-------------|
+| `<path>` | `.sws` file or directory |
+| `-o <out>` | Output file or directory |
 
-**Поведение:**
+**Behavior:**
 
-- Если `<path>` — файл, компилируется в один `.js`.
-- Если `<path>` — директория, **рекурсивно** обходит все `.sws`, сохраняя структуру в `-o`.
-- Если `-o` не указан — выход кладётся рядом с исходником (`.sws` → `.js`).
-- Если `-o` указывает на существующую директорию — файлы кладутся в неё с сохранением относительных путей.
-- Если `-o` не существует и `<path>` — директория — создаётся.
+- If `<path>` is a file, it compiles it to a single `.js` file.
+- If `<path>` is a directory, it recursively walks it, finds all `.sws` files, and compiles them preserving the relative directory structure in `<out>`.
+- If `-o` is omitted, the output is written next to the input (`.sws` -> `.js`).
+- If `-o` points to an existing directory (or ends with `/`), the output is placed inside it.
 
-**Возвращает:** 0 при успехе, 1 при ошибках компиляции, 2 при ошибках ввода-вывода.
+**Returns:** `0` on success, `1` on compilation error, `2` on I/O error or invalid arguments.
 
 ### `swsc check <path>`
 
-Проверяет синтаксис и типы без генерации JS.
+Parses and runs codegen in memory to catch errors, without writing any files.
 
 ```bash
 swsc check src/
 swsc check src/main.sws
 ```
 
-| Аргумент | Описание |
-|----------|----------|
-| `<path>` | Файл или директория |
+| Argument | Description |
+|----------|-------------|
+| `<path>` | File or directory |
 
-**Поведение:**
+**Behavior:**
 
-- Для каждого `.sws` выполняются лексер, парсер и (в будущем) checker.
-- JS не генерируется. Файлы не записываются.
-- Ошибки выводятся в stderr.
+- Runs the parser and code generator.
+- No `.js` files are written.
+- Diagnostics are printed to `stderr`.
+- If `<path>` is a directory, it continues checking other files after an error.
 
-**Возвращает:** 0 при отсутствии ошибок, 1 при любых ошибках.
+**Returns:** `0` if no errors, `1` if any errors.
 
-> ℹ️ **Примечание:** в v1 `check` эквивалентен `build --dry-run`. Типы не проверяются, потому что checker не реализован.
+> ℹ️ **Note:** `check` currently performs syntax and basic semantic checks (e.g., unclosed blocks, invalid struct arguments). It does not perform full type checking.
 
-### `swsc run <file.sws> [-- args]`
+### `swsc run <file.sws> [-- args...]`
 
-Компилирует и запускает.
+Compiles and immediately executes a file.
 
 ```bash
 swsc run examples/hello.sws
-swsc run examples/server.sws -- --port 8080
+swsc run script.sws -- --port 8080
 ```
 
-| Аргумент | Описание |
-|----------|----------|
-| `<file.sws>` | Файл для компиляции |
-| `--` | Разделитель. Всё после — аргументы программы |
-| `args` | Аргументы, передаваемые программе |
+| Argument | Description |
+|----------|-------------|
+| `<file.sws>` | The file to compile and run |
+| `--` | Separator. Everything after it is passed to the program |
+| `args` | Arguments passed to the Node.js process |
 
-**Поведение:**
+**Behavior:**
 
-1. Компилирует файл во временный `.js`.
-2. Запускает `node <tmp.js> <args>`.
-3. Прокидывает `stdin`, `stdout`, `stderr` в родительский процесс.
-4. Удаляет временный файл.
-5. Возвращает код возврата `node`.
+1. Compiles the file to a temporary `.js` file.
+2. Spawns `node <tmp.js> <args>`.
+3. Inherits `stdin`, `stdout`, and `stderr`.
+4. Deletes the temporary file.
+5. Returns the exit code of `node`.
 
-> ⚠️ **Внимание:** временный файл создаётся в системной временной директории. Если `TMPDIR` недоступен — ошибка ввода-вывода.
+> ⚠️ **Warning:** If `node` is not in `PATH`, the command fails with exit code `127` (POSIX) or `2`.
 
-### `swsc watch <path> [-o <out>]`
+## Exit Codes
 
-Пересобирает при изменении.
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Compilation error (syntax error, codegen error) |
+| `2` | Usage error, invalid arguments, or I/O error (file not found) |
 
-```bash
-swsc watch src/ -o build/
-```
+## Directory Traversal
 
-| Аргумент | Описание |
-|----------|----------|
-| `<path>` | Файл или директория |
-| `-o, --out <out>` | Выходной файл или директория |
+When `<path>` is a directory, the following rules apply:
 
-**Поведение:**
+1. Only files ending in `.sws` are processed.
+2. Subdirectories are traversed recursively.
+3. Hidden files and directories (starting with `.`) are **not** skipped by default in the current C implementation (unlike the old JS spec), but only `.sws` files are compiled.
 
-1. Выполняет `build` один раз.
-2. Следит за изменениями `.sws` в `<path>`.
-3. При изменении — пересобирает только затронутый файл.
-4. Печатает время пересборки.
+## Output Format
 
-Реализация — polling раз в 200 мс через `fs.watch` или `fs.stat`. Никаких `inotify`/`kqueue`/`ReadDirectoryChangesW` в v1.
-
-> ⚠️ **Внимание:** polling потребляет CPU. Для больших проектов (тысячи файлов) это может быть заметно.
-
-### `swsc dump <file.sws>`
-
-Печатает AST в читаемом виде.
-
-```bash
-swsc dump src/main.sws
-```
-
-**Поведение:**
-
-1. Компилирует файл до AST.
-2. Печатает дерево в stdout.
-3. Не пишет `.js`.
-
-Формат вывода — иерархический, с отступами. Не JSON.
-
-Пример:
+Diagnostics are printed to `stderr` in the following format:
 
 ```
-Program
-  Func greet
-    Param name: String
-    Return
-      Bin +
-        Lit "Hello, "
-        Id name
-  Let x
-    Lit 5
+<path>:<line>:<col>: <message>
 ```
 
-> ℹ️ **Примечание:** формат вывода стабилизируется. В v1 — любой, но детерминированный.
-
-### `swsc version`
-
-Печатает версию.
-
-```bash
-swsc version
-# swsc 0.1.0
+Example:
+```
+src/main.sws:12:5: Expected op '{', got 'foo'
 ```
 
-**Возвращает:** 0.
-
-### `swsc help [<command>]`
-
-Печатает справку.
-
-```bash
-swsc help
-swsc help build
-```
-
-**Поведение:**
-
-- Без аргумента — список команд и краткое описание.
-- С аргументом — подробная справка по команде.
-
-## Флаги
-
-Глобальные, применимы к любой команде.
-
-| Флаг | Аргумент | Описание |
-|------|----------|----------|
-| `-o, --out` | `<path>` | Выходной файл или директория |
-| `--no-runtime` | — | Не встраивать runtime в выходной файл |
-| `--strict` | — | Предупреждения становятся ошибками |
-| `--silent` | — | Подавить вывод при успехе |
-| `--verbose` | — | Печатать обрабатываемые файлы |
-| `--color` | `auto\|always\|never` | Управление цветом |
-
-### `--no-runtime`
-
-Без этого флага в начало каждого `.js` встраивается runtime. С флагом — не встраивается, и пользователь должен подключить его сам.
-
-**Когда использовать:** при сборке проекта из нескольких файлов, чтобы runtime был только в одном (например, в точке входа).
-
-> ⚠️ **Внимание:** при `--no-runtime` сгенерированный код **не работает сам по себе**. Вызовы `_force`, `_range`, `String`, `print` приведут к `ReferenceError`.
-
-### `--strict`
-
-Предупреждения превращаются в ошибки. Компиляция останавливается на первом предупреждении.
-
-### `--silent`
-
-При успешной компиляции ничего не выводится. Ошибки всё равно выводятся.
-
-### `--verbose`
-
-Печатает каждый обрабатываемый файл:
-
-```
-swsc build src/ -o build/ --verbose
-[build] src/main.sws → build/main.js
-[build] src/lib/utils.sws → build/lib/utils.js
-```
-
-### `--color`
-
-| Значение | Поведение |
-|----------|-----------|
-| `auto` | Цвет, если stderr — TTY. По умолчанию |
-| `always` | Всегда цвет |
-| `never` | Никогда цвет |
-
-## Коды возврата
-
-| Код | Значение |
-|-----|----------|
-| 0 | Успех |
-| 1 | Ошибка компиляции |
-| 2 | Ошибка ввода-вывода |
-| 3 | Ошибка конфигурации |
-| 4 | Внутренняя ошибка компилятора |
-
-> ⚠️ **Внимание:** код 4 (внутренняя ошибка) означает баг компилятора, а не ошибку в коде пользователя. Если пользователь его получает — нужно сообщить о проблеме.
-
-## Структура проекта
-
-```
-myproject/
-├── swsc.config.json      — опциональный конфиг
-├── src/
-│   ├── main.sws
-│   └── lib/
-│       └── utils.sws
-└── build/                — выходная директория
-```
-
-## Конфигурация
-
-`swsc.config.json` в корне проекта (рядом с `package.json` или в родительской директории от `<path>`):
-
-```json
-{
-    "src": "src",
-    "out": "build",
-    "strict": false,
-    "target": "es2022",
-    "runtime": true
-}
-```
-
-| Поле | Тип | По умолчанию | Описание |
-|------|-----|--------------|----------|
-| `src` | `string` | `"src"` | Директория с исходниками |
-| `out` | `string` | `"build"` | Выходная директория |
-| `strict` | `boolean` | `false` | То же, что `--strict` |
-| `target` | `string` | `"es2022"` | Целевая версия JS |
-| `runtime` | `boolean` | `true` | То же, что отсутствие `--no-runtime` |
-
-**Приоритет:** флаги командной строки перекрывают конфиг. Конфиг перекрывает значения по умолчанию.
-
-> ❓ **Требуется уточнение:** где именно искать `swsc.config.json`. В корне `cwd`? В родительских директориях до `src/`? В директории `package.json`?
-
-## Поиск файлов
-
-При передаче директории `swsc` обходит её **рекурсивно**. Правила:
-
-1. Включаются файлы с расширением `.sws`.
-2. Пропускаются директории `node_modules`, `.git`, `build` (если она указана в `out`).
-3. Пропускаются файлы, начинающиеся с `.`.
-4. Порядок обхода: алфавитный, по возрастанию.
-
-> ⚠️ **Внимание:** если `out` находится внутри `src`, возникает рекурсия. Компилятор должен исключать `out` из обхода.
-
-## Поведение при ошибках
-
-### Синтаксическая ошибка
-
-```
-src/main.sws:12:5: error: expected `{`, got `foo`
-   |
-12 | func greet(name: String) -> String
-   |                                   ^ expected `{` here
-```
-
-Возвращает 1. Компиляция останавливается. JS не генерируется.
-
-### Ошибка ввода-вывода
-
-```
-swsc: cannot read src/main.sws: ENOENT
-```
-
-Возвращает 2.
-
-### Неверные аргументы
-
-```
-swsc: unknown command 'bild'. Did you mean 'build'?
-```
-
-Возвращает 3.
-
-## Примеры
-
-### Сборка одного файла
-
-```bash
-swsc build hello.sws
-# создаёт hello.js рядом с hello.sws
-```
-
-### Сборка проекта
-
-```bash
-swsc build src/ -o dist/
-# src/a.sws      → dist/a.js
-# src/lib/b.sws  → dist/lib/b.js
-```
-
-### Запуск
-
-```bash
-swsc run hello.sws
-# Hello, World!
-```
-
-### Проверка без записи
-
-```bash
-swsc check src/
-# src/main.sws:12:5: error: ...
-# exit 1
-```
-
-### Просмотр AST
-
-```bash
-swsc dump hello.sws
-# Program
-#   Expr
-#     Call print
-#       Lit "Hello, World!"
-```
-
-### Watch
-
-```bash
-swsc watch src/ -o build/
-# [watch] watching src/ ...
-# [build] src/main.sws → build/main.js  (12 ms)
-# [build] src/lib/utils.sws → build/lib/utils.js  (4 ms)
-# waiting for changes...
-```
-
-## Что CLI не делает
-
-- **Не форматирует исходники.** Это работа редактора.
-- **Не минифицирует выход.** Это работа минификатора.
-- **Не запускает тесты.** У пользователя свои инструменты.
-- **Не управляет зависимостями.** Нет package manager.
-- **Не публикует пакеты.** Нет реестра.
-- **Не резолвит импорты.** Это делает среда выполнения (Node.js, bundler).
-- **Не транслирует в старый JS.** Целевой стандарт — ES2022.
-
-## Совместимость
-
-`swsc` не имеет обратной совместимости между версиями. Всё, что описано — v1. Изменения возможны без предупреждения.
-
-> ℹ️ **Примечание:** при публикации v1 в `package.json` фиксируется версия. Если пользователь обновит `swsc` и его код сломается — это ожидаемо.
-
-## Смотрите также
-
-- [DIAGNOSTICS.md](DIAGNOSTICS.md) — формат ошибок.
-- [PROJECT_LAYOUT.md](PROJECT_LAYOUT.md) — как организовать проект.
-- [BOOT_SEQUENCE.md](BOOT_SEQUENCE.md) — стадии компиляции.
-
----
-
-## Открытые вопросы
-
-❓ **Поиск конфига.** Где искать `swsc.config.json`? В `cwd`, в родительских директориях, в директории `package.json`? Если конфига нет — использовать значения по умолчанию или искать вверх по дереву?
-
-❓ **Реализация.** `swsc` — это Node.js-скрипт или бинарь на C++? В текущей JS-версии — Node.js. В будущем возможен C++.
-
-❓ **`swsc run` и Node.** Что если `node` не установлен в `PATH`? Ошибка с понятным сообщением или тихий фейл?
-
-❓ **`swsc watch` и новые файлы.** Если в директории появился новый `.sws` — компилировать его сразу? Или только при следующем изменении существующего?
-
-❓ **Удаление файлов при `build`.** Если `.sws` удалён, а `.js` в `out` остался — удалять его? В v1 — нет. Стоит ли добавить `--clean`?
-
-❓ **`swsc dump` формат.** Сейчас — не JSON. Стоит ли добавить `--json` для программной обработки?
-
-❓ **`--no-runtime` и `import`.** Если пользователь использует `--no-runtime`, но в коде есть `import { print } from "./other.sws"`, работает ли это? Семантика не описана.
-
-❓ **Пути с пробелами.** `swsc build "my project/src"` — работает? Кавычки, экранирование, Windows-пути — не специфицировано.
-
-❓ **Exit code при `watch`.** Что возвращает `swsc watch` при Ctrl+C? 0 или 130 (SIGINT)?
-
-❓ **Логирование.** Куда идёт `--verbose`? В stderr, чтобы не мешать stdout? Или в stdout?
-
-❓ **Конфликт `-o` и `--out`.** Это алиасы или разные флаги? Согласно таблице — алиасы.
+## Platform Notes
+
+- **POSIX:** `swsc run` uses `system()` to spawn Node.js and parses the exit code via `WIFEXITED`/`WEXITSTATUS`.
+- **Windows:** `swsc run` uses `system()` natively, and relies on `TEMP` or `TMP` environment variables for the temporary file.
+- **No Makefile:** The compiler is built via `build.sh` (or `gcc` directly).

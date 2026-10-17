@@ -1,262 +1,117 @@
 # RUNTIME_SPEC.md
 
-Спецификация рантайма SwiftScript. Документ описывает функции, которые кодогенератор встраивает в начало каждого скомпилированного файла. Если код и документ расходятся — это баг.
+Specification of the SwiftScript runtime. This document describes the exact behavior of the JavaScript code prepended to every compiled file in `tools/main.c`. If the code and this document disagree, the code is the source of truth.
 
-## Обзор
+## Overview
 
-Рантайм — это набор функций, доступных пользовательской программе. Подключается **префиксом** к сгенерированному JS. Не является модулем, не импортируется, не имеет состояния между вызовами (кроме явно оговорённых случаев).
+The runtime is a hardcoded string literal (`SWIFTS_RUNTIME`) in `main.c`. It is prepended to the generated JavaScript output for every single `.sws` file. 
 
-**Расположение:** `js/runtime.js`, константа `RUNTIME`.
-**Формат:** raw string literal с JavaScript-кодом.
-**Способ подключения:** конкатенация с пользовательским кодом в `compiler.js`.
+It provides basic standard library functions (`print`, `String`, `_force`, etc.) that the generated code relies on.
 
-```
-[RUNTIME]
-[user code]
-```
+> ⚠️ **Warning:** The runtime is copied into every compiled file. For a 10-file project, the runtime is duplicated 10 times. Bundlers (like rollup or esbuild) can deduplicate this later.
 
-> ⚠️ **Внимание:** рантайм встраивается в **каждый** скомпилированный файл. При сборке проекта из 10 файлов рантайм появится 10 раз. Дедупликация — работа сборщика, не компилятора.
-
-## Функции
+## Functions
 
 ### `_force(x)`
 
-Развёртка опционала с проверкой.
+Force-unwraps an optional. Used by the code generator for the `!` operator.
 
 ```js
-const _force = (x) => {
-    if (x === null || x === undefined) throw new Error("Force unwrap of nil");
-    return x;
+const _force = (x) => { 
+    if (x === null || x === undefined) throw new Error("Force unwrap of nil"); 
+    return x; 
 };
 ```
 
-| Параметр | Тип | Описание |
-|----------|-----|----------|
-| `x` | `any` | Значение для развёртки |
-
-**Возвращает:** `x`, если `x !== null && x !== undefined`.
-
-**Бросает:** `Error` с сообщением `"Force unwrap of nil"`, если `x === null` или `x === undefined`.
-
-**Используется:** кодогенератором для `x!`.
-
-> ℹ️ **Примечание:** сообщение ошибки — фиксированная строка. Оно не содержит имени переменной или позиции в исходнике. Для отладки придётся смотреть стек.
+- **Throws:** `Error("Force unwrap of nil")` if `x` is `null` or `undefined`.
 
 ### `print(...args)`
 
-Вывод в консоль.
+Prints to the console. Used by the `print()` function.
 
 ```js
 const print = (...args) => console.log(...args);
 ```
 
-| Параметр | Тип | Описание |
-|----------|-----|----------|
-| `...args` | `any[]` | Значения для вывода |
-
-**Возвращает:** `undefined`.
-
-**Побочные эффекты:** запись в `console.log`.
-
-**Используется:** пользовательским кодом напрямую.
-
-> ⚠️ **Внимание:** в браузере `console.log` может быть переопределён playground'ом. В `sandbox.js` `console` — это объект с методами `log`, `error`, `warn`, который собирает вывод в массив. Сообщения не пишутся в реальную консоль.
-
 ### `String(x)`
 
-Преобразование в строку с обработкой специальных случаев.
+A custom string conversion function that handles `null`, arrays, and objects. Used by string interpolation (`"\(x)"`).
 
 ```js
 const String = (x) => {
-    if (x === null || x === undefined) return "nil";
-    if (Array.isArray(x)) return "[" + x.map(String).join(", ") + "]";
-    if (typeof x === "object") {
-        const pairs = Object.entries(x)
-            .map(([k, v]) => k + ": " + String(v))
-            .join(", ");
-        return "{" + pairs + "}";
-    }
-    return "" + x;
+  if (x === null || x === undefined) return "nil";
+  if (Array.isArray(x)) return "[" + x.map(String).join(", ") + "]";
+  if (typeof x === "object") {
+    const pairs = Object.entries(x).map(([k, v]) => k + ": " + String(v)).join(", ");
+    return "{" + pairs + "}";
+  }
+  return "" + x;
 };
 ```
 
-| Вход | Выход |
-|------|-------|
-| `null` | `"nil"` |
-| `undefined` | `"nil"` |
-| `[1, 2, 3]` | `"[1, 2, 3]"` |
-| `[[1, 2], [3, 4]]` | `"[[1, 2], [3, 4]]"` |
-| `{ a: 1, b: 2 }` | `"{a: 1, b: 2}"` |
-| `{ a: { b: 1 } }` | `"{a: {b: 1}}"` |
-| `5` | `"5"` |
-| `3.14` | `"3.14"` |
-| `true` | `"true"` |
-| `"hello"` | `"hello"` |
+- `String(null)` -> `"nil"`
+- `String([1, 2])` -> `"[1, 2]"`
+- `String({ a: 1 })` -> `"{a: 1}"`
 
-**Особые случаи:**
+> ⚠️ **Warning:** This function shadows the global `String` constructor. If a user writes `new String("x")`, it will fail, because `String` is now an arrow function.
 
-- **Циклические ссылки** приводят к бесконечной рекурсии и `RangeError`.
-- **Функции** попадают в ветку `typeof x === "object"`? Нет — `typeof` функции это `"function"`. Функция попадёт в `"" + x` и даст строку вида `"function () { ... }"`.
-- **Symbol** бросит ошибку при `"" + x`? Нет — `String(Symbol())` работает, но `"" + Symbol()` бросает. Здесь используется `"" + x`, поэтому Symbol вызовет ошибку.
-
-> ⚠️ **Внимание:** `String(Symbol("x"))` через эту функцию **бросит TypeError**. Это редкий случай, но он возможен при передаче символа в интерполяцию.
-
-> ℹ️ **Примечание:** имя `String` перекрывает глобальный `String` в области видимости сгенерированного кода. Пользовательский код, использующий `String` как конструктор, получит не то, что ожидает.
-
-### `Int(x)`
-
-Преобразование в целое.
+### Type Conversion
 
 ```js
-const Int = (x) => {
-    const n = parseInt(x, 10);
-    return Number.isNaN(n) ? null : n;
-};
-```
-
-| Вход | Выход |
-|------|-------|
-| `"42"` | `42` |
-| `"42abc"` | `42` |
-| `"abc"` | `null` |
-| `3.14` | `3` |
-| `null` | `NaN` → `null` |
-| `true` | `NaN` → `null` |
-
-**Возвращает:** целое число или `null` при ошибке парсинга.
-
-> ⚠️ **Внимание:** `parseInt("42abc", 10)` возвращает `42`, а не ошибку. Это может маскировать ошибки ввода. Для строгой проверки используйте `Number` напрямую.
-
-### `Double(x)`
-
-Преобразование в дробное.
-
-```js
-const Double = (x) => {
-    const n = parseFloat(x);
-    return Number.isNaN(n) ? null : n;
-};
-```
-
-| Вход | Выход |
-|------|-------|
-| `"3.14"` | `3.14` |
-| `"3.14abc"` | `3.14` |
-| `"abc"` | `null` |
-| `42` | `42` |
-
-**Возвращает:** число с плавающей точкой или `null` при ошибке.
-
-> ℹ️ **Примечание:** `Double(42)` возвращает `42`, а не `42.0`. В JS нет различия между целыми и дробными в рантайме. Тип `Double` в SwiftScript — только для читаемости.
-
-### `Bool(x)`
-
-Приведение к булеву через `Boolean`.
-
-```js
+const Int = (x) => { const n = parseInt(x, 10); return Number.isNaN(n) ? null : n; };
+const Double = (x) => { const n = parseFloat(x); return Number.isNaN(n) ? null : n; };
 const Bool = (x) => Boolean(x);
 ```
 
-| Вход | Выход |
-|------|-------|
-| `true` | `true` |
-| `false` | `false` |
-| `0` | `false` |
-| `""` | `false` |
-| `null` | `false` |
-| `"false"` | `true` |
-| `[]` | `true` |
-| `{}` | `true` |
+- `Int("42")` -> `42`
+- `Int("abc")` -> `null`
+- `Double("3.14")` -> `3.14`
+- `Bool("")` -> `false`
 
-**Возвращает:** результат `Boolean(x)` без изменений.
-
-> ⚠️ **Внимание:** `Bool("false")` возвращает `true`, потому что непустая строка truthy. Это отличается от парсинга строки в булево значение. Для парсинга используйте явное сравнение.
-
-### Математические функции
-
-Перенаправления на `Math`:
+### Math
 
 ```js
 const abs = Math.abs, min = Math.min, max = Math.max;
 const round = Math.round, floor = Math.floor, ceil = Math.ceil;
 ```
 
-| Функция | Поведение |
-|---------|-----------|
-| `abs(x)` | Модуль |
-| `min(a, b, ...)` | Минимум (вариадическая) |
-| `max(a, b, ...)` | Максимум (вариадическая) |
-| `round(x)` | Округление к ближайшему |
-| `floor(x)` | Округление вниз |
-| `ceil(x)` | Округление вверх |
+These are direct references to JavaScript's `Math` object.
 
-Все — прямые ссылки на `Math.*`. Никаких обёрток.
+### Ranges
 
-> ℹ️ **Примечание:** `min()` и `max()` без аргументов возвращают `Infinity` и `-Infinity` соответственно. `min([3, 1, 2])` вернёт `NaN`, потому что массив не число. Для работы с массивами используйте `Math.min(...arr)` или явный цикл.
-
-### `_range(a, b)`
-
-Полуоткрытый диапазон.
+Used by the `..<` and `...` operators.
 
 ```js
-const _range = (a, b) => {
-    const r = [];
-    for (let i = a; i < b; i++) r.push(i);
-    return r;
-};
+const _range   = (a, b) => { const r = []; for (let i = a; i <  b; i++) r.push(i); return r; };
+const _rangeIn = (a, b) => { const r = []; for (let i = a; i <= b; i++) r.push(i); return r; };
 ```
 
-| Параметр | Тип | Описание |
-|----------|-----|----------|
-| `a` | `number` | Нижняя граница (включительно) |
-| `b` | `number` | Верхняя граница (не включительно) |
+- `_range(0, 3)` -> `[0, 1, 2]`
+- `_rangeIn(0, 3)` -> `[0, 1, 2, 3]`
 
-**Возвращает:** массив `[a, a+1, ..., b-1]`.
+## Module vs. Script Wrapping
 
-- При `a === b` — пустой массив.
-- При `a > b` — пустой массив.
-- При `a` или `b` не-числе — непредсказуемое поведение (может быть бесконечный цикл).
+After prepending the runtime, `main.c` checks if the generated user code contains `import` or `export` syntax.
 
-> ⚠️ **Внимание:** `_range(0, Infinity)` создаст бесконечный цикл и заморозит страницу. Диапазоны с нечисловыми границами не проверяются.
-
-**Используется:** кодогенератором для `a..<b`.
-
-### `_rangeIn(a, b)`
-
-Замкнутый диапазон.
-
-```js
-const _rangeIn = (a, b) => {
-    const r = [];
-    for (let i = a; i <= b; i++) r.push(i);
-    return r;
-};
+**If it does (ES Module):**
+```javascript
+[RUNTIME]
+[USER CODE]
 ```
 
-| Параметр | Тип | Описание |
-|----------|-----|----------|
-| `a` | `number` | Нижняя граница (включительно) |
-| `b` | `number` | Верхняя граница (включительно) |
+**If it does not (Script):**
+```javascript
+[RUNTIME]
+(() => {
+[USER CODE]
+})();
+```
 
-**Возвращает:** массив `[a, a+1, ..., b]`.
+This ensures that global variables in simple scripts don't pollute the global namespace.
 
-- При `a === b` — массив из одного элемента `[a]`.
-- При `a > b` — пустой массив.
+## Reserved Names
 
-**Используется:** кодогенератором для `a...b`.
-
-## Инварианты рантайма
-
-Для любого вызова функций рантайма:
-
-1. **Нет мутации глобального состояния.** Все функции, кроме `print`, чистые. `print` имеет побочный эффект, но не мутирует.
-2. **Нет скрытых зависимостей.** Функции не зависят от других функций рантайма, кроме явных вызовов (`String` вызывает `String` рекурсивно).
-3. **Имена уникальны.** Никакая функция не переопределяется и не переопределяет другую.
-4. **Нет `this`.** Никакая функция не использует `this` и не привязана к контексту.
-
-## Имена, занятые рантаймом
-
-Следующие имена заняты и не должны использоваться в пользовательском коде:
+The following identifiers are defined by the runtime and **must not be used** by the user:
 
 ```
 _force  print  String  Int  Double  Bool
@@ -264,73 +119,4 @@ abs  min  max  round  floor  ceil
 _range  _rangeIn
 ```
 
-Использование этих имён в пользовательском коде приводит к одному из исходов:
-
-| Ситуация | Результат |
-|----------|-----------|
-| `let String = 5` | Перекрытие в текущей области видимости |
-| `func abs(x) { }` | Перекрытие на уровне функции (hoisting) |
-| `let x = abs(-5)` без перекрытия | Работает как ожидается |
-| `let x = abs` | Ссылка на функцию, работает |
-
-> ⚠️ **Внимание:** перекрытие имён рантайма не диагностируется. Это может привести к трудноуловимым багам. В v1 нет защиты от этого.
-
-## Встраивание
-
-`compiler.js` формирует итоговый JS:
-
-```js
-const fullJs = hasModuleSyntax
-    ? `${RUNTIME}\n${userJs}`
-    : `${RUNTIME}\n(() => {\n${userJs}\n})();`;
-```
-
-- Если в коде есть `import` или `export` — генерируется модуль с рантаймом в начале файла.
-- Иначе — всё оборачивается в IIFE.
-
-> ⚠️ **Внимание:** в режиме модуля рантайм **в глобальной области видимости**, потому что module-режим не оборачивает в IIFE. В режиме без модулей — **внутри IIFE**. Это означает, что имена рантайма в module-режиме загрязняют глобальную область и могут конфликтовать с другими модулями.
-
-> ❓ **Требуется уточнение:** стоит ли вынести рантайм в отдельный модуль (`import { print, String } from "./runtime.js"`) и генерировать импорты. Сейчас рантайм копируется.
-
-## Размер
-
-Полный текст рантайма — примерно 1.5 КБ. После минификации — примерно 700 байт.
-
-## Что не входит в рантайм
-
-- **Проверки типов.** Все проверки — на этапе компиляции.
-- **`Map`, `Set`, `Promise`.** Предполагается, что доступны из окружения.
-- **Работа с DOM.** Предполагается, что пользователь вызывает `document`, `window` напрямую.
-- **Модульная система.** `import`/`export` генерируются напрямую в ES-модули.
-- **`console.log` напрямую.** Только через `print`.
-- **Обработка ошибок.** `try`/`catch` генерируются кодогенератором, но рантайм не участвует.
-
-## Смотрите также
-
-- [CODEGEN_SPEC.md](CODEGEN_SPEC.md) — какие функции рантайма вызываются.
-- [TYPE_SYSTEM.md](TYPE_SYSTEM.md) — какие типы существуют и как отображаются на рантайм.
-- [STDLIB_SPEC.md](STDLIB_SPEC.md) — что может появиться в будущем.
-
----
-
-## Открытые вопросы
-
-❓ **Коллизии имён.** Пользователь может объявить `let String = 5`, и весь код, использующий интерполяцию (`"\\(x)"` → `` `...${String(x)}` ``), сломается. Стоит ли префиксовать имена рантайма (`__ss_String`) или проверять коллизии в checker'е?
-
-❓ **`String` перекрывает глобальный `String`.** В сгенерированном коде `String` — это функция рантайма, а не конструктор. Пользовательский код, ожидающий `new String(...)`, получит ошибку. Это осознанное решение или проблема?
-
-❓ **Бесконечные диапазоны.** `_range(0, Infinity)` зависнет. Стоит ли проверять границы в рантайме?
-
-❓ **Циклические объекты в `String`.** `String` рекурсивно вызывает себя. Циклический объект → `RangeError`. Стоит ли добавить защиту от циклов?
-
-❓ **`print` и `console`.** В браузере `print` использует `console.log`. В Node.js — тоже. Стоит ли сделать `print` более явным (например, писать в `process.stdout`)?
-
-❓ **Module-режим.** В module-режиме рантайм не оборачивается в IIFE. Это загрязняет глобальную область. Стоит ли всегда оборачивать рантайм в IIFE, независимо от модульности?
-
-❓ **Размер рантайма.** 1.5 КБ на файл — это нормально для одиночной программы, но для проекта из 10 файлов это 15 КБ дублирования. Стоит ли вынести рантайм в отдельный модуль?
-
-❓ **Имена, занятые рантаймом.** Список не документирован в пользовательской документации. Стоит ли добавить раздел «Зарезервированные имена» в LANGUAGE_SPEC.md?
-
-❓ **`Int(x)` и `Double(x)`.** Разница между ними только в `parseInt` vs `parseFloat`. Для чисел оба возвращают число. Стоит ли явно возвращать `null` при не-числе или сохранить текущее поведение?
-
-❓ **Отсутствие `Void`.** Функция без возврата даёт `undefined`. Стоит ли добавить в рантайм константу `void` для единообразия?
+Using these names will shadow the runtime and cause cryptic runtime errors (e.g., `ReferenceError: String is not a function`).

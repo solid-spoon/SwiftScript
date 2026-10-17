@@ -1,761 +1,221 @@
 # CODEGEN_SPEC.md
 
-Спецификация кодогенератора SwiftScript. Документ описывает точное поведение `js/codegen.js`. Если код и документ расходятся — это баг.
+Specification of the SwiftScript code generator. This document describes the exact behavior of `tools/codegen.c`. If the code and this document disagree, the code is the source of truth.
 
-## Обзор
+## Overview
 
-Кодогенератор принимает AST после парсинга и выдаёт JavaScript в виде строки. Никаких проверок типов на этом этапе — предполагается, что AST корректен. Ошибки кодогенератора — это баги компилятора, а не пользователя.
+The code generator takes the AST produced by the parser and emits a JavaScript string. No type checking occurs here; the AST is assumed to be correct. Any error thrown by the code generator is a compiler bug, not a user error.
 
-**Вход:** узел `Program` из парсера.
-**Выход:** строка с JavaScript-кодом.
-**Контракт:** для любого валидного AST либо возвращается строка, либо бросается `SSError` с текстом «Кодоген: неизвестный …». Второй случай — всегда баг.
+**Input:** A `N_PROGRAM` AST node.
+**Output:** A string containing the user's JavaScript code, or `NULL` on error.
+**Contract:** For any valid AST, it either returns a string or sets a codegen error (via `codegen_error()`) and returns `NULL`.
 
-## Общая структура выхода
+## Output Structure and Wrapping
 
-Кодогенератор возвращает **только пользовательский код**. Рантайм добавляется отдельно, в `compiler.js`.
+The code generator emits **only the user's code**. The runtime and IIFE wrapper are added later in `main.c`.
 
+If `user_js` contains `import` or `export` at the start of a line, it is treated as an ES Module. The final output is:
 ```
-[user code]
+[RUNTIME]
+[user_js]
 ```
 
-Если в коде есть `import` или `export`, `compiler.js` не оборачивает результат в IIFE. Если нет — оборачивает:
-
+Otherwise, it is wrapped in an IIFE to prevent global scope pollution:
 ```javascript
+[RUNTIME]
 (() => {
-[user code]
+[user_js]
 })();
 ```
 
-Это позволяет **не засорять глобальную область** в программах без модулей.
+## Strategy and Context (`Ctx`)
 
-## Стратегия
+The code generator does not build a full symbol table. It uses a `Ctx` struct to track the current scope:
 
-Кодогенератор — **чисто функциональный**. Нет глобального состояния, кроме счётчика `_swCounter`, который увеличивается при каждом `switch`. Счётчик сбрасывается **только при загрузке модуля**, не между компиляциями. Это значит, что при **нескольких вызовах** `compile()` в одном процессе счётчик продолжает расти, и имена меток не пересекаются между файлами.
+- `struct_names`: Set of known struct names (used for constructor syntax).
+- `class_names`: Set of known class names (used to auto-insert `new`).
+- `enum_cases`: Map of `.case` to `EnumName` for shorthand resolution.
+- `locals`: Set of local variables and parameters in the current scope.
+- `fields`: Set of fields in the current struct/class.
+- `self_prefix`: `"_self"` inside a struct, `"this"` inside a class, `NULL` elsewhere.
+- `break_stack`: Tracks if `break` should apply to a loop or a switch.
 
-> ⚠️ **Внимание:** при повторной компиляции одного файла метки `_swN` будут другими. Это не влияет на семантику, но мешает байт-в-байт сравнению выходов.
+### Error Handling
+Instead of throwing exceptions, the code generator calls `codegen_error(line, col, "message")`. The first error sets a global flag. At the end of `gen_program`, if the flag is set, the generated string is freed and `NULL` is returned.
 
-## Идентификаторы и области видимости
+## Identifiers and Scope Resolution
 
-Кодогенератор **не строит символьную таблицу**. Он использует плоскую трансляцию имён с точечной подменой:
+Inside a struct or class method, identifier resolution follows this rule:
+1. If the name is a local variable or parameter → use as-is.
+2. If the name is a field → prefix with `_self.` (struct) or `this.` (class).
+3. Otherwise → use as-is.
 
-- Внутри метода структуры `self.x` превращается в `_self.x`.
-- Поля структуры, упомянутые без `self.`, в контексте метода автоматически префиксуются `_self.`.
-- Параметры функции и локальные `let`/`var` **перекрывают** поля структуры.
-
-Правило разрешения имени внутри метода:
-
-```
-1. Если имя — параметр или локальная переменная → имя как есть.
-2. Если имя — поле структуры → _self.<имя>.
-3. Иначе → имя как есть.
-```
-
-Реализация — через два `Set`: `fields` (имена полей и методов структуры) и `locals` (параметры + локальные переменные).
-
-## Отображение statements
+## Statements
 
 ### `Let`
-
-```swift
-let x = 5
-var y = "hello"
-```
-
-```javascript
-const x = 5;
-let y = "hello";
-```
-
-| Исходный `kind` | JavaScript |
-|-----------------|------------|
-| `let` | `const` |
-| `var` | `let` |
-
-Если `value === null`, генерируется `undefined`:
-
-```swift
-let x: Int
-```
-
-```javascript
-const x = undefined;
-```
-
-> ℹ️ **Примечание:** `let x: Int` в SwiftScript не оставляет переменную неинициализированной. Она всегда получает значение, по умолчанию `undefined`. Проверка «инициализирована ли» — задача checker'а.
+| SwiftScript | JavaScript |
+|-------------|------------|
+| `let x = 5` | `const x = 5;` |
+| `var y = 5` | `let y = 5;` |
+| `let z: Int` | `const z = undefined;` |
 
 ### `Func`
-
 ```swift
-func fib(_ n: Int) -> Int {
-    if n < 2 { return n }
-    return fib(n - 1) + fib(n - 2)
-}
+func fib(_ n: Int) -> Int { ... }
 ```
-
 ```javascript
-function fib(n) {
-if ((n < 2)) { return n; }
-return (fib((n - 1)) + fib((n - 2)));
-}
+function fib(n) { ... }
 ```
-
-- Типы параметров и возврата **стираются**.
-- Метки аргументов **игнорируются**. Используется только `param.name`.
-- Отступы внутри тела — не добавляются. Тело генерируется одной строкой на statement.
-
-> ⚠️ **Внимание:** отсутствие форматирования в выходном JS означает, что код **нечитаем для человека**. Это осознанное решение: выходной JS предназначен для выполнения, а не для чтения. Если нужен читаемый JS, добавьте минификатор или форматтер после.
+- Types and labels are erased. `async` is preserved.
+- Bodies are emitted without extra indentation.
 
 ### `Struct`
-
 ```swift
-struct Point {
-    let x: Int
-    let y: Int
-
-    func manhattan() -> Int {
-        return abs(self.x) + abs(self.y)
-    }
-}
+struct Point { let x: Int; let y: Int }
 ```
-
 ```javascript
 function Point(_args) {
   const { x, y } = _args;
   const _self = { x, y };
-  _self.manhattan = function() {
-    return (abs(_self.x) + abs(_self.y));
-  };
+  // ... methods attached to _self ...
   return Object.freeze(_self);
 }
 ```
+- Constructors take a single object `_args`.
+- If **all** fields are `let`, the object is frozen. If any field is `var`, it is not frozen.
+- `static` methods are attached to the constructor itself: `Point.create = function() { ... }`.
 
-Разбор:
-
-1. **Конструктор принимает один объект** `_args`. Все аргументы **должны быть именованными**. Если хоть один — безымянный, бросается `SSError`.
-2. **Поля деструктурируются** из `_args` в локальные переменные.
-3. **`_self` создаётся** из этих переменных. Это позволяет методам видеть поля.
-4. **Методы добавляются** как свойства `_self`.
-5. **Если все поля `let`** — результат замораживается. Если есть хотя бы одно `var` — нет.
-
-> ⚠️ **Внимание:** замороженная структура не поддерживает мутацию полей. Если поле объявлено `var`, но структура заморожена из-за других полей — присваивание вызовет ошибку в строгом режиме. Текущее правило: **любое `var` поле отключает заморозку всей структуры**.
-
-Вызов конструктора:
-
+### `Class`
 ```swift
-let p = Point(x: 3, y: 4)
+class Dog extends Animal { ... }
 ```
-
 ```javascript
-const p = Point({x: 3, y: 4});
-```
-
-### `Enum`
-
-```swift
-enum Status {
-    case ok
-    case warn(String)
-    case error(code: Int, message: String)
+class Dog extends Animal {
+  constructor(name) {
+    this.name = name;
+  }
+  speak() {
+    return "Woof";
+  }
 }
 ```
+- `init` becomes `constructor`.
+- `super.init(...)` becomes `super(...)`.
+- Fields with default values (e.g., `let x: Int = 5`) are emitted at the top of the constructor.
+- `static` and `async` modifiers are preserved.
 
+### `Enum`
+```swift
+enum Status { case ok; case warn(String) }
+```
 ```javascript
 const Status = Object.freeze({
   ok: Object.freeze({ _case: "ok" }),
   warn: (_0) => Object.freeze({ _case: "warn", _0 }),
-  error: (_0, _1) => Object.freeze({ _case: "error", _0, _1 }),
 });
 ```
 
-Разбор:
+### Loops and Control Flow
+- `while cond { ... }` → `while (cond) { ... }`
+- `for x in xs { ... }` → `for (const x of xs) { ... }`
+- `break` inside a `switch` becomes `break _swN;`. Elsewhere, it is `break;`.
+- `try { ... } catch e { ... }` → `try { ... } catch (e) { ... }`
 
-1. **Каждый случай — свойство объекта `Status`.**
-2. **Случай без payload'а** — замороженный объект `{ _case: "name" }`.
-3. **Случай с payload'ом** — функция-конструктор, возвращающая замороженный объект.
-4. **Payload-аргументы называются `_0`, `_1`, ...** — позиционно.
-
-**Метки payload'а игнорируются.** `case error(code: Int, message: String)` даёт конструктор с двумя позиционными аргументами, доступными как `_0` и `_1`.
-
-### `Return`
-
-```swift
-return 5
-return
-```
-
-```javascript
-return 5;
-return;
-```
-
-### `Break` / `Continue`
-
-Вне `switch`:
-
-```javascript
-break;
-continue;
-```
-
-Внутри `switch` — `break` превращается в `break _swN`, где `N` — метка текущего `switch`.
-
-### `While`
-
-```swift
-while x > 0 { x -= 1 }
-```
-
-```javascript
-while ((x > 0)) { (x -= 1); }
-```
-
-Тело — блок. Формируется через `genStmt(body, ctx)`, где `body` — это `Block`.
-
-### `For`
-
-```swift
-for n in nums { print(n) }
-```
-
-```javascript
-for (const n of nums) { print(n); }
-```
-
-Переменная цикла **всегда `const`**. Изменение переменной внутри цикла — ошибка времени выполнения, не компиляции.
-
-> ⚠️ **Внимание:** `for n in nums { n = 5 }` не вызовет ошибку компиляции, но выбросит `TypeError` в рантайме. Проверка — задача checker'а.
-
-### `Block`
-
-```swift
-{ let x = 5; print(x) }
-```
-
-```javascript
-{ const x = 5; print(x); }
-```
-
-### `Expr` (statement)
-
-```swift
-print("hello")
-```
-
-```javascript
-print("hello");
-```
-
-Если выражение внутри — `If` или `Switch`, вызывается соответствующая функция кодогенерации.
-
-## Отображение выражений
+## Expressions
 
 ### `Lit`
-
-| SwiftScript | JavaScript |
-|-------------|------------|
-| `5` | `5` |
-| `3.14` | `3.14` |
-| `"hello"` | `"hello"` |
-| `true` | `true` |
-| `nil` | `null` |
-
-Строки экранируются через `JSON.stringify`. `nil` → `null`.
+- `nil` → `null`
+- Strings are JSON-escaped.
+- Numbers use `%.17g` to preserve double precision.
 
 ### `Id`
+- `self` → `_self` or `this` depending on context.
 
-```swift
-x
-self
-```
-
-```javascript
-x
-_self     // только внутри метода структуры
-```
-
-Внутри метода `self` → `_self`. Поля структуры без `self.` префиксуются `_self.` автоматически.
-
-### `EnumCase`
-
-```swift
-.ok
-.warn("slow")
-```
-
-```javascript
-Status.ok              // если Status в области видимости через enumCases
-Status.warn("slow")    // если Status в области видимости через enumCases
-```
-
-Кодогенератор использует таблицу `enumCases`, построенную в `collectDecls`. Она отображает имя случая на имя enum'а. Если случая нет в таблице — генерируется просто имя без квалификатора.
-
-> ⚠️ **Внимание:** таблица `enumCases` — плоская, по имени случая. Если два enum'а имеют случай с одинаковым именем, **побеждает последний объявленный**. Это ограничение v1.
-
-### `Array`
-
-```swift
-[1, 2, 3]
-```
-
-```javascript
-[1, 2, 3]
-```
+### `Call` and `new`
+- Struct constructor: `Point(x: 1, y: 2)` → `Point({x: 1, y: 2})`.
+- Class constructor: `Dog(name: "Rex")` → `new Dog({name: "Rex"})` (auto-inserted if `Dog` is in `class_names`).
+- External classes (like `vscode.TreeItem`) require explicit `new`.
+- Argument labels are stripped: `f(x: 1)` → `f(1)`.
 
 ### `Dict`
-
 ```swift
-["a": 1, "b": 2]
+["a": 1]
 ```
-
 ```javascript
-({["a"]: 1, ["b"]: 2})
+({["a"]: 1})
 ```
-
-Словарь генерируется как **объект с вычисляемыми ключами**, а не как `Map`. Это значит, что ключи приводятся к строкам через `String(key)`. Использование не-строковых ключей приведёт к неожиданному поведению.
-
-> ⚠️ **Внимание:** `[1: "a", 2: "b"]` в JavaScript даст `{ "1": "a", "2": "b" }`. Числовые ключи становятся строковыми. Для настоящих Map-семантик используйте `Map` из runtime — но в v1 его нет.
+> ⚠️ **Warning:** Dictionaries are plain JS objects. Keys are coerced to strings.
 
 ### `Tuple`
-
 ```swift
-(1, "hello")
+(1, "a")
 ```
-
 ```javascript
-[1, "hello"]
+[1, "a"]
 ```
+Tuples are arrays.
 
-Кортеж генерируется как **массив**. Доступ по индексу работает, деструктуризация работает через `[a, b] = tuple`. Но методы массива (`.length`, `.map`) тоже доступны — это не настоящий tuple.
-
-### `Template`
-
+### `Template` (String Interpolation)
 ```swift
 "Hello, \(name)!"
 ```
-
 ```javascript
 `Hello, ${String(name)}!`
 ```
-
-Правила экранирования для text-частей:
-
-| Символ | Экранируется как |
-|--------|------------------|
-| `\` | `\\` |
-| `` ` `` | `` \` `` |
-| `$` | `\$` |
-
-Expr-части оборачиваются в `String(...)` для корректного преобразования `null` и объектов.
-
-### `Member`
-
-```swift
-a.b
-a?.b
-```
-
-```javascript
-a.b
-a?.b
-```
-
-Опциональность переносится напрямую.
-
-### `Index`
-
-```swift
-a[0]
-a?[0]
-```
-
-```javascript
-a[0]
-a?.[0]
-```
-
-### `Call`
-
-```swift
-f(x, y)
-obj.method(z)
-```
-
-```javascript
-f(x, y)
-obj.method(z)
-```
-
-Метки аргументов **отбрасываются**:
-
-```swift
-f(x: 1, y: 2)
-```
-
-```javascript
-f(1, 2)
-```
-
-> ⚠️ **Внимание:** метки аргументов не проверяются. `f(y: 1, x: 2)` даст `f(1, 2)`, что может быть семантически неверно.
-
-Вызов конструктора структуры обрабатывается отдельно: аргументы **должны быть именованными**, иначе `SSError`. Генерируется:
-
-```swift
-Point(x: 3, y: 4)
-```
-
-```javascript
-Point({x: 3, y: 4})
-```
-
-### `Force`
-
-```swift
-x!
-```
-
-```javascript
-_force(x)
-```
-
-`_force` определён в runtime. Бросает ошибку, если значение `null` или `undefined`.
-
-### `Unary`
-
-```swift
--x
-!x
-+x
-```
-
-```javascript
-(-x)
-(!x)
-(+x)
-```
-
-Операнды всегда оборачиваются в скобки. Это не избыточно — приоритеты в JS и SwiftScript совпадают, но скобки снимают любую неопределённость.
-
-### `Bin`
-
-Особые случаи:
-
-| SwiftScript | JavaScript |
-|-------------|------------|
-| `a ..< b` | `_range(a, b)` |
-| `a ... b` | `_rangeIn(a, b)` |
-| `a ?? b` | `(a ?? b)` |
-| другие | `(a op b)` |
-
-Все остальные операторы переносятся как есть, с обёрткой в скобки.
-
-### `Ternary`
-
-```swift
-cond ? a : b
-```
-
-```javascript
-(cond ? a : b)
-```
-
-### `Assign`
-
-```swift
-x = 5
-x += 1
-```
-
-```javascript
-(x = 5)
-(x += 1)
-```
-
-Присваивание обёрнуто в скобки — это позволяет использовать его как выражение в тех местах, где разрешено.
-
-### `If` как выражение
-
-Две формы:
-
-**Простая** (одно выражение в ветке):
-
-```swift
-let x = if c { 1 } else { 2 }
-```
-
-```javascript
-const x = (c ? 1 : 2);
-```
-
-**Общая** (блоки statement'ов):
-
-```swift
-let x = if c { print("yes"); 1 } else { 2 }
-```
-
-```javascript
-const x = (() => { if (c) { print("yes"); return 1; } return 2; })();
-```
-
-Общая форма генерирует IIFE с `return` на последнем expression каждого блока.
-
-Правила:
-
-1. Если `then` — блок из одного `Expr` и `else` — блок из одного `Expr` — тернарник.
-2. Если `else` — `If` — рекурсивный вызов на `else`, тернарник.
-3. Иначе — IIFE.
-
-> ⚠️ **Внимание:** IIFE захватывает `this`. Если внутри `if`-выражения используется `this` (в коде на JS), оно не сработает. В SwiftScript `this` не используется, проблема не проявляется.
-
-### `Switch` как выражение
-
-```swift
-let x = switch n { case 1: 10; default: 20 }
-```
-
-```javascript
-const x = (() => { _sw1: { const _s1 = n; if (_s1 === 1) { return 10; break _sw1; } { return 20; } } })();
-```
-
-Генерируется IIFE с внутренним `switch`. Возвращаемое значение — результат `return` внутри тела.
-
-> ⚠️ **Внимание:** `switch` как statement использует `break _swN` для выхода из метки. Внутри IIFE `break` работает так же. Но если `switch` не завершается ни одним `return`, IIFE вернёт `undefined`.
-
-### `Switch` как statement
-
-```swift
-switch x {
-case 1: print("one")
-case 2: print("two")
-default: print("other")
-}
-```
-
-```javascript
-_sw1: {
-  const _s1 = x;
-  if (_s1 === 1) {
-    print("one");
-    break _sw1;
-  }
-  if (_s1 === 2) {
-    print("two");
-    break _sw1;
-  }
-  {
-    print("other");
-  }
-}
-```
-
-Каждый `case` превращается в `if`. Проверка паттерна генерируется функцией `genPattern`. После тела — `break _swN`.
-
-**`default` не генерирует метку** — просто блок в конце. Если ни один `case` не совпал, управление попадёт в `default`.
-
-`break` внутри тела `switch` (пользовательский) превращается в `break _swN`. Это позволяет выйти из всего `switch`, не только из цикла.
-
-> ℹ️ **Примечание:** `switch` без `default` не является исчерпывающим, но и не бросает ошибку. Если ни один `case` не совпал, ничего не произойдёт, управление продолжится после метки.
-
-### Генерация паттернов
-
-| Паттерн | Условие | Bindings |
-|---------|---------|----------|
-| `.ok` | `_s && _s._case === "ok"` | — |
-| `.warn(let m)` | `_s && _s._case === "warn"` | `const m = _s._0;` |
-| `let x` | `true` | `const x = _s;` |
-| `_` | `true` | — |
-| `42` | `_s === 42` | — |
-| `nil` | `_s === null` | — |
-| `400...499` | `(_s >= 400) && (_s <= 499)` | — |
-| `400..<500` | `(_s >= 400) && (_s < 500)` | — |
-| `SOME_CONST` | `_s === SOME_CONST` | — |
-
-Несколько паттернов в одном `case` (`case 301, 302:`) объединяются через `||`:
-
-```javascript
-if ((_s === 301 || _s === 302)) { ... }
-```
-
-Guard (`where`) оборачивает всё в IIFE:
-
-```swift
-case let x where x > 100: return "big"
-```
-
-```javascript
-if ((() => { if (!(true)) return false; const x = _s; return (x > 100); })()) { ... }
-```
-
-> ⚠️ **Внимание:** для `case let x where cond` bindings выполняются **внутри IIFE**, и `x` не виден в теле `case`. Это **баг**: `case let x where x > 100: return x` не сработает, потому что `x` не определён в теле. Единственный способ использовать `x` — вернуть его из IIFE как часть условия.
+- `\`, `` ` ``, and `$` are escaped in text parts.
+- Expression parts are wrapped in `String(...)`.
+
+### Operators
+- `a ..< b` → `_range(a, b)`
+- `a ... b` → `_rangeIn(a, b)`
+- `a ?? b` → `(a ?? b)`
+- Everything else: `(a op b)`
+
+### `If` as an expression
+- If both branches are single expressions → ternary `(cond ? a : b)`.
+- If branches contain statements → IIFE `(() => { ... })()`.
+> ℹ️ **Note:** The code generator detects if the `if` has no `else` or is used as an action-only statement (e.g., inside an async closure) and avoids wrapping it in an IIFE, preventing `await` from being trapped inside a synchronous function.
+
+### `Switch`
+- `switch` as a statement uses a labeled block `_swN: { ... }`.
+- `switch` as an expression uses an IIFE.
 
 ### `Closure`
-
 ```swift
-{ $0 * 2 }
-{ (a: Int, b: Int) -> Int in a + b }
+nums.map { $0 * 2 }
 ```
-
 ```javascript
-(($0) => { return ($0 * 2); })
-((a, b) => { return (a + b); })
+nums.map((($0) => { return ($0 * 2); }))
 ```
+- If no explicit parameters are provided, `$0`, `$1`, etc., are collected. The highest index determines the parameter count.
+- `async` closures become `async (...) => { ... }`.
 
-Правила:
+## Patterns (Switch Cases)
 
-1. **Если параметры указаны явно** — используются их имена.
-2. **Если параметры не указаны** — анализируется тело. Собираются все `$0`, `$1`, ... Наибольший индекс `N` определяет число параметров.
-3. **Если `$`-параметров нет** — замыкание без параметров.
-4. **Тело — массив statements.** Последний `Expr` превращается в `return`.
+| Pattern | Condition | Bindings |
+|---------|-----------|----------|
+| `.ok` | `_s && _s._case === "ok"` | — |
+| `.warn(let m)` | `_s && _s._case === "warn"` | `const m = _s._0;` |
+| `42` | `_s === 42` | — |
+| `400...499` | `(_s >= 400) && (_s <= 499)` | — |
+| `let x` | `true` | `const x = _s;` |
 
-Функция `collectDollar` обходит всё тело, включая вложенные выражения, и собирает индексы `$N`. **Вложенные замыкания со своими `$`** учитываются **тоже**, что приводит к неверному определению числа параметров.
-
-> ⚠️ **Внимание:** `nums.map { $0.map { $0 * 2 } }` — внешнее замыкание получит параметры `$0, $1`, потому что внутреннее использует `$0`. Внутреннее замыкание тоже получит параметр `$0`. Это **shadowing**, и поведение неочевидно. Для вложенных замыканий **используйте явные параметры**.
-
-### `Try` и `Await`
-
-```swift
-try f()
-await g()
-```
-
-```javascript
-f()
-(await g())
-```
-
-`try` разворачивается прозрачно. `await` оборачивается в скобки.
-
-> ⚠️ **Внимание:** `try` **не эмулирует** Swift-семантику. Вызов функции с `try` не проверяет, что функция помечена `throws`. Исключения JS не перехватываются.
+> ℹ️ **Note:** `where` guards wrap the condition and bindings in an IIFE to evaluate them together. Bindings are re-emitted inside the `if` block to be visible in the case body.
 
 ## Runtime
 
-Вспомогательные функции, на которые ссылается кодогенератор:
+The code generator relies on the following runtime functions prepended by `main.c`:
+`_force`, `_range`, `_rangeIn`, `String`, `print`, `Int`, `Double`, `Bool`, `abs`, `min`, `max`, `round`, `floor`, `ceil`.
 
-| Имя | Назначение |
-|-----|------------|
-| `_force(x)` | Развёртка опционала |
-| `_range(a, b)` | Массив `[a, b)` |
-| `_rangeIn(a, b)` | Массив `[a, b]` |
-| `String(x)` | Преобразование в строку |
-| `print(...)` | Вывод |
-| `abs`, `min`, `max`, `round`, `floor`, `ceil` | Математика |
-| `Int(x)`, `Float(x)`, `Bool(x)` | Преобразования |
+## Invariants
 
-Runtime добавляется в начало файла в `compiler.js`, не в кодогенераторе.
+1. Output is valid JavaScript.
+2. All type annotations and argument labels are erased.
+3. `_self` and `this` are used correctly for structs and classes.
+4. Internal names (`_swN`, `_sN`, `_self`, `_0`) are used for bookkeeping.
 
-## Инварианты выхода
+## Known Limitations
 
-Для любого валидного AST:
-
-1. **Выход — валидный JavaScript.** Если `node --check` (синтаксический анализ без выполнения) находит ошибку — это баг компилятора.
-2. **Все идентификаторы из исходника сохранены.** Имя `x` в `.sws` даёт `x` в `.js`, если не перекрыто `_self.`.
-3. **Все типы стёрты.** В выходном коде нет `Int`, `Float`, `String`, `Bool`, `Void`, `Any`, `T?`, `[T]`.
-4. **Все метки аргументов стёрты.** `f(x: 1)` даёт `f(1)`.
-5. **Все аннотации стёрты.** `let x: Int = 5` даёт `const x = 5`.
-
-## Что кодогенератор не делает
-
-- **Не проверяет типы.** Это работа checker'а (планируется).
-- **Не форматирует выход.** Однострочные statements, без отступов.
-- **Не минифицирует.** Имена сохранены как в исходнике.
-- **Не транспилирует в старый JS.** Целевой стандарт — ES2022.
-- **Не генерирует source maps.**
-- **Не резолвит импорты.** Это делает среда выполнения или сборщик.
-- **Не дедуплицирует runtime.** Если в проекте 10 файлов, runtime попадёт в каждый.
-
-## Проблемные случаи
-
-### Вложенные `switch`
-
-Каждый `switch` получает свою метку `_swN` и переменную `_sN`. Счётчик общий, поэтому метки уникальны в пределах **всех** компиляций в процессе.
-
-```swift
-switch a {
-case 1:
-    switch b { case 2: return "both" }
-}
-```
-
-```javascript
-_sw1: {
-  const _s1 = a;
-  if (_s1 === 1) {
-    _sw2: {
-      const _s2 = b;
-      if (_s2 === 2) { return "both"; break _sw2; }
-    }
-    break _sw1;
-  }
-}
-```
-
-Метки уникальны, конфликта нет.
-
-### `switch` внутри `switch` в одном выражении
-
-```swift
-let x = switch a { case 1: switch b { case 2: 10 } }
-```
-
-Внутренний `switch` как выражение оборачивается в IIFE. `break _swN` работает только внутри метки. IIFE использует `return` для выхода.
-
-> ⚠️ **Внимание:** смешивание `break _swN` и `return` внутри IIFE может привести к неожиданному поведению. Если внутренний `case` использует `break`, он выйдет только из метки, а не из IIFE.
-
-### Пользовательские имена `_sw`, `_s`, `_self`
-
-Пользователь **может** объявить переменную `_self` или функцию `_sw1`. Кодогенератор **не проверяет** коллизии с внутренними именами. Результат — shadowing или ошибка.
-
-> ⚠️ **Внимание:** имена `_self`, `_sw<N>`, `_s<N>`, `_0`, `_1` и все имена из runtime (`_force`, `_range`, `_rangeIn`) **не должны использоваться** в пользовательском коде. В v1 это не проверяется.
-
-### Строковая интерполяция с вложенными кавычками
-
-```swift
-let s = "he said \"\(name)\""
-```
-
-Парсер разбирает это в `Template` с частями `he said "`, `name`, `"`. Кодогенератор экранирует `"` как обычный символ (не трогает — экранирование только для `` ` `` и `$`).
-
-Результат:
-
-```javascript
-`he said "${String(name)}"`
-```
-
-Корректно, потому что `"` внутри шаблонной строки не требует экранирования.
-
-### `let` без типа и без значения
-
-```swift
-let x
-```
-
-Парсер допускает это (согласно GRAMMAR.md). Кодогенератор генерирует:
-
-```javascript
-const x = undefined;
-```
-
-## Смотрите также
-
-- [AST_SCHEMA.md](AST_SCHEMA.md) — какие узлы приходят на вход.
-- [RUNTIME_SPEC.md](RUNTIME_SPEC.md) — что делает runtime.
-- [TYPE_SYSTEM.md](TYPE_SYSTEM.md) — что проверяется до кодогенерации.
-
----
-
-## Открытые вопросы
-
-❓ **Байтовая стабильность.** Счётчик `_swCounter` глобальный. При двух компиляциях подряд один и тот же исходник даёт разные метки. Это мешает golden-тестам. Стоит ли сбрасывать счётчик в начале каждого `compile()`?
-
-❓ **Словарь как объект vs Map.** Сейчас `Dict` генерируется как объект. Это ломает семантику для не-строковых ключей. Стоит ли генерировать `new Map([[k, v], ...])`?
-
-❓ **Коллизии внутренних имён.** Пользователь может назвать переменную `_self` или `_force`. Стоит ли ввести префикс, который пользователь не может использовать (например, `__ss_`)?
-
-❓ **`case let x where cond`.** Текущая генерация не позволяет использовать `x` в теле `case`. Это баг или осознанное ограничение?
-
-❓ **`switch` с двумя `let` паттернами в одном `case`.** `case let a, let b:` — оба паттерна совпадают всегда, второй недостижим. Стоит ли диагностировать?
-
-❓ **`break` внутри вложенного `if` внутри `switch`.** Пользовательский `break` внутри `if` генерирует `break _swN`, что выходит из всего `switch`. Но пользователь мог ожидать `break` из цикла — если `switch` внутри цикла, то семантика неоднозначна. Стоит ли запретить `break` вне циклов?
-
-❓ **`try` и `await` без контекста.** `try` генерируется прозрачно, но если функция не бросает, `try` бессмысленен. Если в языке появятся `throws`-функции, `try` должен стать обязательным. Стоит ли сейчас ввести диагностику `try` без `throws`-функции?
-
-❓ **Форматирование.** Сейчас выходной JS без отступов. Это усложняет отладку. Стоит ли добавить минимальное форматирование (переносы строк, отступы) как опцию?
+- Nested closures with `$0` shadow each other (e.g., `nums.map { $0.map { $0 * 2 } }`).
+- User variables named `_self`, `_sw1`, etc., will cause collisions.
+- `case let x where cond` bindings are correctly visible in the body, but complex multi-pattern cases with guards may have edge cases.

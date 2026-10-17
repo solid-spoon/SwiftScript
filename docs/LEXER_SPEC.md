@@ -1,297 +1,193 @@
 # LEXER_SPEC.md
 
-Спецификация лексера SwiftScript. Документ описывает точное поведение `js/lexer.js`. Если код и документ расходятся — это баг.
+Specification of the SwiftScript lexer. This document describes the exact behavior of `tools/lexer.c`. If the code and this document disagree, the code is the source of truth.
 
-## Обзор
+## Overview
 
-Лексер превращает исходный текст `.sws` в плоский массив токенов. Каждый токен содержит вид, значение и позицию. Лексер не декодирует escape-последовательности в строках и не разбирает интерполяцию — это работа парсера.
+The lexer transforms the `.sws` source text into a flat array of tokens. Each token contains a type, a value, and a position. The lexer does not decode escape sequences in strings and does not parse interpolation; that is the parser's job.
 
-**Вход:** строка в кодировке UTF-8.
-**Выход:** массив `Token`, последний элемент — `eof`.
+**Input:** A UTF-8 encoded string.
+**Output:** A `TokenList` array. The last element is always `T_EOF`.
 
-**Контракт:** для любого входа лексер либо возвращает массив токенов, либо бросает `SSError` с позицией. Промежуточных состояний нет.
+**Contract:** For any input, the lexer either returns a `TokenList` or reports an error via `SSError` with a position. There are no intermediate states.
 
-## Типы токенов
+## Token Types
 
-| `t` | Значение | Описание |
-|-----|----------|----------|
-| `num` | `Number` | Числовой литерал |
-| `str` | `string` | Строковый литерал (кавычки сняты, escapes сохранены) |
-| `id` | `string` | Идентификатор |
-| `kw` | `string` | Ключевое слово |
-| `op` | `string` | Оператор или пунктуация |
-| `eof` | `null` | Конец файла |
+Defined in `lexer.h` as `TokType`:
 
-Структура токена:
+| Enum | Description |
+|------|-------------|
+| `T_NUM` | Numeric literal |
+| `T_STR` | String literal (quotes stripped, escapes preserved) |
+| `T_ID` | Identifier |
+| `T_KW` | Keyword |
+| `T_OP` | Operator or punctuation |
+| `T_EOF` | End of file |
 
-```js
-{
-    t:    "num" | "str" | "id" | "kw" | "op" | "eof",
-    v:    <значение, см. таблицу выше>,
-    line: <1-based>,
-    col:  <1-based>
-}
+Token structure (`Token` struct):
+```c
+typedef struct {
+    TokType type;
+    char   *value;   // for STR / KW / ID / OP; NULL for NUM/EOF
+    double  num;     // for NUM
+    int     line, col;
+} Token;
 ```
 
-## Ключевые слова
+## Keywords
 
-Распознаются в лексере и выдаются как `kw`:
+Recognized by the lexer and emitted as `T_KW`:
 
 ```
 let  var  func  return  if  else  for  in  while  break  continue
 struct  enum  class  protocol  extension  import  true  false  nil
 self  init  guard  defer  throws  try  catch  switch  case  default
 where  inout  async  await  public  private  internal  static  lazy
+implements  extends  override  new  super  throw  rethrows  export  from  as
 ```
 
-Слова `class`, `protocol`, `extension`, `init`, `defer`, `throws`, `catch`, `where`, `inout`, `public`, `private`, `internal`, `static`, `lazy` входят в список для совместимости с синтаксисом Swift. Их семантика в v1 не определена.
+> ⚠️ **Warning:** Some keywords (e.g., `protocol`, `extension`) are reserved for Swift compatibility but are not yet processed by the parser. Using them will result in a parser error.
 
-> ❓ **Требуется уточнение:** должны ли неиспользуемые ключевые слова вызывать ошибку при парсинге, или игнорироваться. Текущее поведение — парсер их не обрабатывает, что приводит к ошибке «unexpected token».
+## Tokenization Rules
 
-## Правила токенизации
+### Whitespace and BOM
 
-### Пробельные символы
+Whitespace is skipped. We rely on the C standard `isspace()` function.
 
-Пропускаются. Используется встроенный в JavaScript класс `\s`, который включает:
+If the file starts with a UTF-8 BOM (`EF BB BF`), it is explicitly skipped before tokenization begins.
 
-- ASCII: пробел, `\t`, `\n`, `\r`, `\f`, `\v`.
-- Unicode: NBSP, тонкий пробел, разделители строк (U+2028, U+2029), ideographic space и другие.
+### Comments
 
-> ⚠️ **Внимание:** неразрывный пробел (NBSP) и ideographic space пропускаются как пробелы. Если скопировать код из веб-страницы, они могут попасть в исходник незаметно.
+| Syntax | Behavior |
+|--------|----------|
+| `// ...` to `\n` | Skipped to the end of the line |
+| `/* ... */` | Skipped to the first `*/` |
 
-### Комментарии
+Nested block comments are **not** supported.
 
-Два вида:
+> ⚠️ **Warning:** An unterminated `/*` comment throws an `SSError` (`"Unterminated block comment"`). It does not silently consume the rest of the file.
 
-| Синтаксис | Поведение |
-|-----------|-----------|
-| `// ...` до `\n` | Пропускается до конца строки |
-| `/* ... */` | Пропускается до первого `*/` |
+### Numeric Literals
 
-Вложенные блочные комментарии **не поддерживаются**.
+We support standard decimal, hexadecimal, binary, and octal literals.
 
-```swift
-/* внешний /* внутренний */ всё ещё комментарий? */
-```
+**Decimal:**
+- Digits `0-9`.
+- Underscores `_` are allowed as separators, but strict: no leading, trailing, or double underscores (`1__2` is an error).
+- Decimals: `3.14`.
+- Exponents: `1e10`, `1.5e-3`.
 
-В этом примере комментарий закроется на первом `*/`. После него останется `всё ещё комментарий? */`, что вызовет ошибку.
+**Hex / Binary / Octal:**
+- Hex: `0xFF`, `0XFF`.
+- Binary: `0b1010`, `0B1010`.
+- Octal: `0o777`, `0O777`.
+- Underscores are allowed in the digits (e.g., `0xFF_FF`).
 
-Незакрытый блочный комментарий — **не ошибка**. Лексер молча доходит до конца файла.
+> ℹ️ **Note:** `strtoull` is used for hex/oct/bin parsing to avoid overflow. If the number exceeds `long long`, it falls back to `strtod` for a floating-point approximation.
 
-> ⚠️ **Внимание:** незакрытый `/*` не сообщает об ошибке. Код после него просто не компилируется.
+### String Literals
 
-### Числовые литералы
+Only double quotes (`"..."`) are supported. Single quotes are rejected (they are not valid strings in Swift).
 
-Начинаются с цифры `0-9`. Продолжаются цифрами и символом `_`. Символ `_` игнорируется при вычислении значения.
+The lexer does **not** decode escape sequences. It preserves pairs like `\n`, `\t`, `\\`, and `\"` in the buffer as-is for the parser to handle.
 
-```
-123        → 123
-1_000      → 1000
-1_000_000  → 1000000
-```
+Strings **cannot** span multiple lines. A `\n` inside a string will cause an "Unterminated string" error when the EOF is reached.
 
-Если после целой части стоит `.` и **сразу за ним цифра** — точка и последующие цифры включаются в число:
+An unterminated string throws an `SSError` with the position of the opening quote.
 
-```
-3.14       → 3.14
-0.5        → 0.5
-```
+### Identifiers
 
-Если после `.` цифры нет — точка **не включается** в число. Она станет отдельным токеном `op`:
+Start with `[A-Za-z_$]`, followed by `[A-Za-z0-9_$]`.
 
 ```
-1.         → num 1, op .
-1.foo      → num 1, op ., id foo
+foo       → T_ID "foo"
+_foo      → T_ID "_foo"
+$0        → T_ID "$0"
+$1        → T_ID "$1"
 ```
 
-Если `.` стоит перед цифрой, но **не после числа** — она остаётся отдельным токеном:
+- `$` is allowed for implicit closure parameters (`$0`, `$1`).
+- `_` is a valid identifier. It is used in patterns as a wildcard and in function parameters as an "unlabeled" marker.
+- `self` is a keyword (`T_KW`).
 
-```
-.5         → op ., num 5
-```
+**Unicode identifiers are not supported.** `имя` or `变量` will trigger an "Unknown character" error.
 
-**Шестнадцатеричные, восьмеричные и двоичные литералы не поддерживаются.** Запись `0x1F` разбирается как `num 0` + `id x1F`.
+> ⚠️ **Warning:** `is_id_start` and `is_id_part` in `lexer.c` are strictly ASCII to avoid locale-dependent bugs.
 
-> ❓ **Требуется уточнение:** нужны ли `0x`, `0b`, `0o` в v1, или достаточно десятичных.
+### Operators
 
-Экспоненциальная запись (`1e10`, `1.5e-3`) **не поддерживается**. `1e10` разбирается как `num 1` + `id e10`.
-
-### Строковые литералы
-
-Два вида кавычек: `"..."` и `'...'`. Оба дают токен `str`. Лексер не различает одинарные и двойные кавычки.
-
-Внутри строки распознаются escape-последовательности только на уровне «не конец строки». Лексер **не декодирует** escapes. Он сохраняет пары `\` + следующий символ в буфер как есть.
-
-```
-"hello\nworld"  → str с значением `hello\nworld` (backslash-n как два символа)
-```
-
-Декодирование происходит в парсере, в функции `parseString`.
-
-> ℹ️ **Примечание:** `\` перед последним символом файла не вызывает ошибку — он сохраняется как обычный символ, и лексер доходит до EOF, где бросает «Незакрытая строка».
-
-Строка **не может** занимать несколько строк. Символ `\n` внутри `"..."` не завершает строку, но и не считается специальным — он попадёт в буфер как символ новой строки.
-
-```swift
-let s = "line1
-line2"
-```
-
-Это допустимо с точки зрения лексера. `s` будет содержать перевод строки.
-
-Незакрытая строка — ошибка с позицией **открывающей** кавычки.
-
-### Идентификаторы
-
-Начинаются с `[A-Za-z_$]`, продолжаются `[A-Za-z0-9_$]`.
-
-```
-foo       → id foo
-_foo      → id _foo
-$0        → id $0
-$1        → id $1
-foo_bar   → id foo_bar
-foo123    → id foo123
-```
-
-Символ `$` разрешён в идентификаторах для поддержки неявных параметров замыканий (`$0`, `$1`). Отдельный токен `$` не существует.
-
-`_` — валидный идентификатор (односимвольный). Используется в паттернах как wildcard и в параметрах функций как метка «без имени». Разбор — в парсере.
-
-Идентификатор `self` — ключевое слово (`kw`), обрабатывается отдельно.
-
-**Unicode-идентификаторы не поддерживаются.** `имя`, `变量` — ошибка «Неизвестный символ».
-
-### Операторы
-
-Трёхсимвольные (проверяются первыми):
-
+Three-character operators (checked first):
 ```
 ...    ..<
 ```
 
-Двухсимвольные:
-
+Two-character operators:
 ```
 ->  ==  !=  <=  >=  &&  ||  ??  ?.  +=  -=  *=  /=  %=
 ```
 
-Односимвольные:
-
+Single-character operators:
 ```
-+  -  *  /  %  <  >  (  )  [  ]  {  }  ,  :  .  =  !  ?  @  _  &  |
-```
-
-Порядок проверки: трёхсимвольные → двухсимвольные → односимвольные. Это означает, что `..` не существует как отдельный токен — он разбирается как два `op .`:
-
-```
-a..b       → id a, op ., op ., id b
-a...b      → id a, op ..., id b
-a..<b      → id a, op ..<, id b
++  -  *  /  %  <  >  (  )  [  ]  {  }  ,  ;  :  .  =  !  ?  @  _  &  |  ~  ^
 ```
 
-Точка `.` в конце оператора `?.` — часть двухсимвольного токена:
-
-```
-a?.b       → id a, op ?., id b
-a? .b      → id a, op ?, op ., id b
-```
-
-> ⚠️ **Внимание:** в выражении `a?.b` токен `?.` — единый. Пробел между `?` и `.` меняет разбор.
+> ℹ️ **Note:** `..` is not a token. It is parsed as two `T_OP "."` tokens.
+> ℹ️ **Note:** `a?.b` uses the two-character `?.` token. `a? .b` uses `?` and `.`.
 
 ### EOF
 
-Добавляется всегда, в конце потока. Имеет `t: "eof"`, `v: null`, позицию — конец файла.
+Always appended at the end. Has `type: T_EOF`, `value: NULL`, and the position is the end of the file.
 
-Даже если во входе есть ошибка, лексер доходит до EOF или бросает `SSError`. EOF **не** добавляется при ошибке.
+## Positions
 
-## Позиции
+Each token stores `line` and `col`. Both are 1-based.
 
-Каждый токен хранит `line` и `col`. Оба — 1-based.
+`line` increments on `\n`. `col` resets to 1.
 
-`line` увеличивается при переходе через `\n`. `col` сбрасывается в 1 после `\n`.
+For string literals, the position is the **opening quote**.
 
-```
-строка 1
-строка 2
-```
+## Errors
 
-Токен `строка` на второй строке имеет `line: 2, col: 1`.
+The lexer throws an `SSError` in the following cases:
 
-Для строковых литералов позиция — **открывающая кавычка**, а не закрывающая.
+| Message | Condition |
+|---------|-----------|
+| `Unterminated string` | `"` without a closing quote before EOF |
+| `Unknown character '<c>'` | Character does not match any lexical class |
+| `Unterminated block comment` | `/*` without a closing `*/` before EOF |
 
-Для `eof` позиция — точка после последнего символа.
+All errors contain `line` and `col` of the problematic character.
 
-## Ошибки
+## Invariants
 
-Лексер бросает `SSError` в двух случаях:
+For any successful `tokenize(src)` call:
 
-| Сообщение | Условие |
-|-----------|---------|
-| `Незакрытая строка` | Найден `"` или `'` без закрывающей кавычки до EOF |
-| `Неизвестный символ '<c>'` | Символ не входит ни в один класс |
+1. The result is an array where the last element is `T_EOF`.
+2. Positions are monotonically non-decreasing.
+3. `T_NUM` values are finite doubles.
+4. `T_KW` values are in the keyword list.
+5. Concatenating the token values (with appropriate whitespace stripping) reconstructs the input.
 
-Оба содержат `line` и `col` первого проблемного символа.
+## Example
 
-Незакрытый блочный комментарий **не** вызывает ошибку.
-
-## Инварианты
-
-Для любого успешного вызова `tokenize(src)`:
-
-1. Результат — массив, последний элемент имеет `t: "eof"`.
-2. Позиции монотонно неубывают: `(line, col)` каждого следующего токена ≥ предыдущего.
-3. Значение `num` — валидное число JavaScript (`Number.isFinite` не проверяется, но `NaN` не появляется).
-4. Значение `kw` входит в список ключевых слов.
-5. Значение `op` входит в объединённый список операторов (трёх-, двух- и односимвольных).
-6. Конкатенация `v` для `num`/`id`/`kw` и `v` для `op` (с учётом типа) покрывает вход **без** пробелов и комментариев.
-
-## Пример
-
-Вход:
-
+Input:
 ```swift
-let x = 1_000 + 3.14
+let x = 0xFF + 3.14
 ```
 
-Токены:
+Tokens:
 
-| # | `t` | `v` | `line` | `col` |
-|---|-----|-----|--------|-------|
-| 0 | `kw` | `let` | 1 | 1 |
-| 1 | `id` | `x` | 1 | 5 |
-| 2 | `op` | `=` | 1 | 7 |
-| 3 | `num` | `1000` | 1 | 9 |
-| 4 | `op` | `+` | 1 | 14 |
-| 5 | `num` | `3.14` | 1 | 16 |
-| 6 | `eof` | `null` | 1 | 20 |
+| # | Type | Value | Line | Col |
+|---|------|-------|------|-----|
+| 0 | `T_KW` | `let` | 1 | 1 |
+| 1 | `T_ID` | `x` | 1 | 5 |
+| 2 | `T_OP` | `=` | 1 | 7 |
+| 3 | `T_NUM` | `255.0` | 1 | 9 |
+| 4 | `T_OP` | `+` | 1 | 14 |
+| 5 | `T_NUM` | `3.14` | 1 | 16 |
+| 6 | `T_EOF` | `null` | 1 | 20 |
 
-## Ограничения v1
+## See Also
 
-- Нет Unicode-идентификаторов.
-- Нет hex/oct/bin литералов.
-- Нет экспоненциальной записи.
-- Нет многострочных строк (`"""`).
-- Нет вложенных блочных комментариев.
-- Нет префикса `#` для директив.
-- Нет raw-строк (`#"..."#`).
-
-Каждое из этих расширений можно добавить, но это повлияет на совместимость с уже написанными файлами.
-
-## Смотрите также
-
-- [GRAMMAR.md](GRAMMAR.md) — правила разбора потока токенов в AST.
-- [DIAGNOSTICS.md](DIAGNOSTICS.md) — коды ошибок и формат вывода.
-- [AST_SCHEMA.md](AST_SCHEMA.md) — структура дерева, которое строит парсер.
-
----
-
-## Открытые вопросы
-
-❓ **Неиспользуемые ключевые слова.** `class`, `protocol`, `extension` распознаются лексером, но парсер их не обрабатывает. Должны ли они быть убраны из списка до реализации соответствующих конструкций, или остаться для читаемости ошибок?
-
-❓ **`0x` литералы.** В ZX они были. В SwiftScript — нет. Это осознанное решение или пробел?
-
-❓ **Одинарные кавычки.** Сейчас `'hello'` — валидная строка. В Swift `'a'` — символ, а `'ab'` — ошибка. Стоит ли различать, или оставить как есть для простоты?
-
-❓ **Незакрытый блочный комментарий.** Молчаливое поглощение до EOF может маскировать ошибки. Нужно ли это сделать диагностикой?
+- [GRAMMAR.md](GRAMMAR.md) — how tokens are parsed into an AST.
+- [C_IMPLEMENTATION.md](C_IMPLEMENTATION.md) — how the lexer is structured in C.
