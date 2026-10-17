@@ -57,6 +57,7 @@ static SS ss_clone(SS *src) {
 
 typedef struct {
     SS struct_names;
+    SS class_names;
     struct Pair { char *k; char *v; } *enum_cases;
     int enum_case_count, enum_case_cap;
     SS fields;
@@ -112,6 +113,7 @@ static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
         Node *s = prog->stmts->items[i];
         if (s->kind == N_STRUCT) ss_add(&ctx->struct_names, s->name);
+        if (s->kind == N_CLASS)  ss_add(&ctx->class_names, s->name);
         if (s->kind == N_ENUM) {
             for (int j = 0; j < s->cases->count; j++) {
                 Node *c = s->cases->items[j];
@@ -655,6 +657,7 @@ static char *gen_struct(Node *n, Ctx *parent) {
 
     for (int i = 0; i < n->methods->count; i++) {
         Node *m = n->methods->items[i];
+        if (m->is_static) continue;
         Ctx mctx = ctx_copy(parent);
         mctx.fields = members;
         mctx.self_prefix = "_self";
@@ -689,7 +692,6 @@ static char *gen_struct(Node *n, Ctx *parent) {
         sb_put(&sb, "  };\n");
     }
 
-    /* Static methods: emit as properties on the constructor function. */
     for (int i = 0; i < n->methods->count; i++) {
         Node *m = n->methods->items[i];
         if (!m->is_static) continue;
@@ -985,8 +987,10 @@ static char *gen_call(Node *n, Ctx *ctx) {
         n->args->count == 2 && ((Node*)n->args->items[1])->a->kind == N_CLOSURE)
         do_swap = 1;
 
+    int is_ctor = (n->a->kind == N_ID && ss_has(&ctx->class_names, n->a->name));
+
     StrBuf sb; sb_init(&sb);
-    if (n->is_new) sb_put(&sb, "new ");
+    if (n->is_new || is_ctor) sb_put(&sb, "new ");
     char *callee = gen_expr(n->a, ctx);
     sb_put(&sb, callee); free(callee);
     if (n->optional) sb_put(&sb, "?.");

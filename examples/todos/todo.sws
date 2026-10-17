@@ -1,0 +1,60 @@
+// todo.sws — маленький менеджер задач
+
+enum Priority {
+    case low
+    case medium
+    case high
+}
+
+struct Task {
+    let title: String
+    let priority: Priority
+    let done: Bool
+}
+
+func makeTask(title: String, priority: Priority) -> Task {
+    return Task(title: title, priority: priority, done: false)
+}
+
+func markDone(t: Task) -> Task {
+    return Task(title: t.title, priority: t.priority, done: true)
+}
+
+func priorityTag(p: Priority) -> String {
+    switch p {
+    case .low:    return "[ ]"
+    case .medium: return "[~]"
+    case .high:   return "[!]"
+    }
+    return "[-]"
+}
+
+func priorityRank(p: Priority) -> Int {
+    switch p {
+    case .low:    return 1
+    case .medium: return 2
+    case .high:   return 3
+    }
+    return 0
+}
+
+var tasks = [
+    makeTask(title: "Write compiler", priority: .high),
+    makeTask(title: "Read a book",    priority: .medium),
+    makeTask(title: "Take a nap",     priority: .low)
+]
+
+tasks[0] = markDone(t: tasks[0])
+
+print("=== TODO ===")
+for t in tasks {
+    let check = t.done ? "x" : " "
+    print("[\(check)] \(priorityTag(p: t.priority)) \(t.title)")
+}
+
+let pending      = tasks.filter({ t in !t.done })
+let highPriority = tasks.filter({ t in priorityRank(p: t.priority) == 3 })
+
+print("")
+print("Pending: \(pending.length)")
+print("High priority: \(highPriority.length)")

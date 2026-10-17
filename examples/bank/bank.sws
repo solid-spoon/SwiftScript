@@ -1,0 +1,133 @@
+// bank.sws — мини-банк: классы, наследование, ошибки, опционалы
+
+enum BankError {
+    case negativeAmount(amount: Double)
+    case insufficientFunds(needed: Double, available: Double)
+    case frozen(id: String)
+}
+
+class Account {
+    let id: String
+    var balance: Double
+    var frozen: Bool = false
+
+    init(id: String, balance: Double) {
+        self.id = id
+        self.balance = balance
+    }
+
+    func deposit(amount: Double) throws {
+        if frozen {
+            throw BankError.frozen(id: id)
+        }
+        guard amount > 0.0 else {
+            throw BankError.negativeAmount(amount: amount)
+        }
+        balance = balance + amount
+    }
+
+    func withdraw(amount: Double) throws {
+        if frozen {
+            throw BankError.frozen(id: id)
+        }
+        guard amount > 0.0 else {
+            throw BankError.negativeAmount(amount: amount)
+        }
+        guard balance >= amount else {
+            throw BankError.insufficientFunds(needed: amount, available: balance)
+        }
+        balance = balance - amount
+    }
+}
+
+class Savings extends Account {
+    let rate: Double
+
+    init(id: String, balance: Double, rate: Double) {
+        super.init(id: id, balance: balance)
+        self.rate = rate
+    }
+
+    func accrue() {
+        self.balance = self.balance + self.balance * self.rate
+    }
+}
+
+var accounts = [
+    Account(id: "ACC-1", balance: 100.0),
+    Savings(id: "ACC-2", balance: 50.0, rate: 0.05),
+    Account(id: "ACC-3", balance: 0.0)
+]
+
+func findAccount(id: String) -> Account? {
+    for a in accounts {
+        if a.id == id {
+            return a
+        }
+    }
+    return nil
+}
+
+func describeError(e: BankError) -> String {
+    switch e {
+    case .negativeAmount(let amt):
+        return "Negative amount: \(amt)"
+    case .insufficientFunds(let need, let have) where have > 0.0:
+        return "Need \(need), only \(have) available"
+    case .insufficientFunds(let need, _):
+        return "No funds at all (need \(need))"
+    case .frozen(let who):
+        return "Account \(who) is frozen"
+    }
+    return "unknown"
+}
+
+func transfer(fromId: String, toId: String, amount: Double) {
+    guard let src = findAccount(id: fromId) else {
+        print("✗ No such account: \(fromId)")
+        return
+    }
+    guard let dst = findAccount(id: toId) else {
+        print("✗ No such account: \(toId)")
+        return
+    }
+    try {
+        src.withdraw(amount: amount)
+        dst.deposit(amount: amount)
+        print("✓ Transferred \(amount) from \(fromId) to \(toId)")
+    } catch e {
+        print("✗ Transfer failed: \(describeError(e: e))")
+    }
+}
+
+print("=== Initial balances ===")
+for a in accounts {
+    print("  \(a.id): \(a.balance)")
+}
+
+print("")
+print("=== Transfers ===")
+transfer(fromId: "ACC-1", toId: "ACC-2", amount: 30.0)
+transfer(fromId: "ACC-1", toId: "ACC-3", amount: 200.0)
+transfer(fromId: "ACC-9", toId: "ACC-1", amount: 10.0)
+transfer(fromId: "ACC-3", toId: "ACC-1", amount: 5.0)
+
+print("")
+print("=== Savings interest ===")
+let savings = findAccount(id: "ACC-2")!
+savings.accrue()
+print("After interest: \(savings.id) = \(savings.balance)")
+
+print("")
+print("=== Final balances ===")
+for a in accounts {
+    print("  \(a.id): \(a.balance)")
+}
+
+print("")
+let unknown = findAccount(id: "ACC-99")
+if let u = unknown {
+    print("Found: \(u.id)")
+} else {
+    print("ACC-99 not found, balance default: \(unknown?.balance ?? -1.0)")
+}

@@ -334,6 +334,8 @@ static Node *parse_func(P *p) {
         }
     }
     expect_op(p, ")");
+    match_kw(p, "throws");
+    match_kw(p, "rethrows");
     if (match_op(p, "->")) n->retType = parse_type(p);
     expect_op(p, "{");
     n->body = list_new();
@@ -376,6 +378,7 @@ static Node *parse_init(P *p) {
         }
     }
     expect_op(p, ")");
+    match_kw(p, "throws");
     expect_op(p, "{");
     n->body = list_new();
     while (!check_op(p, "}")) {
@@ -422,6 +425,8 @@ static Node *parse_struct(P *p) {
             m->is_static = is_static;
             m->is_async = is_async;
             list_push(n->methods, m);
+        } else if (check_kw(p, "init")) {
+            list_push(n->methods, parse_init(p));
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
@@ -516,7 +521,7 @@ static Node *parse_class(P *p) {
             p_err(p, g->line, g->col, "Unterminated class");
         }
         int is_static = 0, is_async = 0;
-        int mods = parse_decl_modifiers(p, &is_static, &is_async);
+        parse_decl_modifiers(p, &is_static, &is_async);
 
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
@@ -540,11 +545,6 @@ static Node *parse_class(P *p) {
             m->is_static = is_static;
             m->is_async = is_async;
             list_push(n->methods, m);
-        } else if (mods) {
-            Token *g = peek(p, 0);
-            p_err(p, g->line, g->col,
-                  "After modifiers expected field, init, or func, got '%s'",
-                  g->value ? g->value : "<eof>");
         } else {
             Token *g = peek(p, 0);
             p_err(p, g->line, g->col,
@@ -1100,7 +1100,13 @@ static Node *parse_postfix(P *p, int no_trailing) {
                 }
             }
             expect_op(p, ")");
-            int is_async_fn = match_kw(p, "async");
+            int is_async_fn = 0;
+            while (1) {
+                if (match_kw(p, "async"))  { is_async_fn = 1; continue; }
+                if (match_kw(p, "throws")) continue;
+                if (match_kw(p, "rethrows")) continue;
+                break;
+            }
             if (match_op(p, "->")) parse_type(p);
             expect_op(p, "{");
             List *body = list_new();
