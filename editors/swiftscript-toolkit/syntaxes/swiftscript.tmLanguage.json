@@ -1,0 +1,267 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SwiftScript",
+  "scopeName": "source.swiftscript",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#enum-cases" },
+    { "include": "#builtins" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.swiftscript",
+          "begin": "//",
+          "end": "$",
+          "patterns": [
+            {
+              "name": "keyword.codetag.notation.swiftscript",
+              "match": "\\b(TODO|FIXME|XXX|NOTE|HACK)\\b"
+            }
+          ]
+        },
+        {
+          "name": "comment.block.swiftscript",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.swiftscript",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#string-escapes" },
+            { "include": "#string-interpolation" }
+          ]
+        }
+      ]
+    },
+    "string-escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.swiftscript",
+          "match": "\\\\(n|t|r|\\\\|\"|')"
+        }
+      ]
+    },
+    "string-interpolation": {
+      "name": "meta.embedded.line.swiftscript",
+      "begin": "\\\\\\(",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.embedded.begin.swiftscript" }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.embedded.end.swiftscript" }
+      },
+      "patterns": [{ "include": "source.swiftscript" }]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.integer.hexadecimal.swiftscript",
+          "match": "\\b0[xX][0-9a-fA-F][0-9a-fA-F_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.binary.swiftscript",
+          "match": "\\b0[bB][01][01_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.octal.swiftscript",
+          "match": "\\b0[oO][0-7][0-7_]*\\b"
+        },
+        {
+          "name": "constant.numeric.float.swiftscript",
+          "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.function.swiftscript",
+          "match": "\\b(func)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.swiftscript" },
+            "2": { "name": "entity.name.function.swiftscript" }
+          }
+        },
+        {
+          "name": "meta.struct.swiftscript",
+          "match": "\\b(struct)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.struct.swiftscript" },
+            "2": { "name": "entity.name.type.struct.swiftscript" }
+          }
+        },
+        {
+          "name": "meta.enum.swiftscript",
+          "match": "\\b(enum)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.enum.swiftscript" },
+            "2": { "name": "entity.name.type.enum.swiftscript" }
+          }
+        },
+        {
+          "name": "meta.class.swiftscript",
+          "match": "\\b(class)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.swiftscript" },
+            "2": { "name": "entity.name.type.class.swiftscript" }
+          }
+        },
+        {
+          "name": "meta.enum-case.swiftscript",
+          "match": "\\b(case)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "keyword.control.case.swiftscript" },
+            "2": { "name": "entity.name.type.enum-case.swiftscript" }
+          }
+        },
+        {
+          "name": "meta.var-declaration.swiftscript",
+          "match": "\\b(let|var)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.binding.swiftscript" },
+            "2": { "name": "variable.other.declaration.swiftscript" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.swiftscript",
+          "match": "\\b(if|else|switch|default|for|in|while|break|continue|return|where|guard)\\b"
+        },
+        {
+          "name": "keyword.control.import.swiftscript",
+          "match": "\\b(import|export|from|as)\\b"
+        },
+        {
+          "name": "keyword.control.exception.swiftscript",
+          "match": "\\b(try|catch|throws|rethrows|throw|defer)\\b"
+        },
+        {
+          "name": "keyword.control.async.swiftscript",
+          "match": "\\b(async|await)\\b"
+        },
+        {
+          "name": "storage.modifier.swiftscript",
+          "match": "\\b(private|public|internal|static|lazy|override|inout|implements|extends)\\b"
+        },
+        {
+          "name": "keyword.operator.new.swiftscript",
+          "match": "\\bnew\\b"
+        },
+        {
+          "name": "storage.type.binding.swiftscript",
+          "match": "\\b(let|var|func|init)\\b"
+        },
+        {
+          "name": "storage.type.decl.swiftscript",
+          "match": "\\b(struct|enum|class|protocol|extension)\\b"
+        },
+        {
+          "name": "variable.language.self.swiftscript",
+          "match": "\\bself\\b"
+        },
+        {
+          "name": "variable.language.super.swiftscript",
+          "match": "\\bsuper\\b"
+        },
+        {
+          "name": "constant.language.boolean.swiftscript",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.swiftscript",
+          "match": "\\bnil\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.swiftscript",
+          "match": "\\b(Int|Float|Double|Bool|String|Void|Any)\\b"
+        },
+        {
+          "name": "entity.name.type.swiftscript",
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "enum-cases": {
+      "patterns": [
+        {
+          "name": "entity.name.type.enum-case.shorthand.swiftscript",
+          "match": "\\.([a-z][a-zA-Z0-9_]*)"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.swiftscript",
+          "match": "\\b(print|String|Int|Double|Float|Bool|abs|min|max|round|floor|ceil)\\b"
+        },
+        {
+          "name": "variable.other.dollar.swiftscript",
+          "match": "\\$\\d+"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.range.swiftscript",
+          "match": "\\.\\.\\.|\\.\\.<"
+        },
+        {
+          "name": "keyword.operator.nullable.swiftscript",
+          "match": "\\?\\?|\\?\\."
+        },
+        {
+          "name": "keyword.operator.arrow.swiftscript",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.logical.swiftscript",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.comparison.swiftscript",
+          "match": "==|!=|<=|>=|[<>]"
+        },
+        {
+          "name": "keyword.operator.arithmetic.swiftscript",
+          "match": "[-+*/%]"
+        },
+        {
+          "name": "keyword.operator.assignment.swiftscript",
+          "match": "=(?!=)"
+        },
+        {
+          "name": "punctuation.separator.swiftscript",
+          "match": "[,;:]"
+        },
+        {
+          "name": "punctuation.section.swiftscript",
+          "match": "[(){}\\[\\]]"
+        }
+      ]
+    }
+  }
+}

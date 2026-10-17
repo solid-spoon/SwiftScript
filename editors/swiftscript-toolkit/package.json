@@ -1,0 +1,47 @@
+{
+  "name": "swiftscript",
+  "displayName": "SwiftScript",
+  "description": "Syntax, snippets, outline, folding, hover and completion for SwiftScript — written in SwiftScript",
+  "version": "0.2.0",
+  "publisher": "swiftscript",
+  "license": "MIT",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solid-spoon/SwiftScript"
+  },
+  "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
+  "type": "module",
+  "activationEvents": ["onLanguage:swiftscript"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "swiftscript",
+        "aliases": ["SwiftScript", "swiftscript", "sws"],
+        "extensions": [".sws"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "icon.png",
+          "dark": "icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "swiftscript",
+        "scopeName": "source.swiftscript",
+        "path": "./syntaxes/swiftscript.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "swiftscript",
+        "path": "./snippets/swiftscript.json"
+      }
+    ]
+  }
+}

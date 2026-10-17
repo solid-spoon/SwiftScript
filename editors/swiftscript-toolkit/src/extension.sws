@@ -1,0 +1,338 @@
+// SwiftScript — Language features for .sws files
+
+import * as vscode from "vscode"
+
+enum DeclKind {
+    case classDecl
+    case structDecl
+    case enumDecl
+    case funcDecl
+    case letDecl
+}
+
+class Decl {
+    let name: String
+    let kind: DeclKind
+    let line: Int
+    var endLine: Int
+    let signature: String
+    var children: [Decl]
+
+    init(name: String, kind: DeclKind, line: Int, endLine: Int, signature: String) {
+        self.name = name
+        self.kind = kind
+        self.line = line
+        self.endLine = endLine
+        self.signature = signature
+        self.children = []
+    }
+}
+
+/* ---------------- Parsing ---------------- */
+
+func stripComment(line: String) -> String {
+    let pos = line.indexOf("//")
+    if pos >= 0 {
+        return line.substring(0, pos)
+    }
+    return line
+}
+
+func countOccurrences(s: String, sub: String) -> Int {
+    if sub.length == 0 { return 0 }
+    return s.split(sub).length - 1
+}
+
+func charAt(s: String, i: Int) -> String {
+    if i < 0 || i >= s.length { return "" }
+    return s.substring(i, i + 1)
+}
+
+func isIdentPart(c: String) -> Bool {
+    if c.length == 0 { return false }
+    if c == "_" || c == "$" { return true }
+    if c >= "a" && c <= "z" { return true }
+    if c >= "A" && c <= "Z" { return true }
+    if c >= "0" && c <= "9" { return true }
+    return false
+}
+
+func findBlockEnd(lines: [String], start: Int) -> Int {
+    var depth = 0
+    var sawOpen = false
+    var i = start
+    while i < lines.length {
+        let code = stripComment(line: lines[i])
+        let opens = countOccurrences(s: code, sub: "{")
+        let closes = countOccurrences(s: code, sub: "}")
+        if opens > 0 { sawOpen = true }
+        depth += opens - closes
+        if sawOpen && depth <= 0 { return i }
+        i += 1
+    }
+    if lines.length == 0 { return 0 }
+    return lines.length - 1
+}
+
+func detectDecl(raw: String, lineNo: Int) -> Any {
+    let code = stripComment(line: raw)
+    let t = code.trim()
+    if t.length == 0 { return nil }
+
+    let words = t.split(" ")
+    var idx = 0
+    var kind: DeclKind? = nil
+
+    for w in words {
+        if w.length == 0 { continue }
+        if w == "class" { kind = .classDecl; break }
+        if w == "struct" { kind = .structDecl; break }
+        if w == "enum" { kind = .enumDecl; break }
+        if w == "func" { kind = .funcDecl; break }
+        if w == "let" || w == "var" { kind = .letDecl; break }
+        if w == "private" || w == "public" || w == "internal" ||
+           w == "static" || w == "async" || w == "override" ||
+           w == "lazy" || w == "export" {
+            idx += 1
+            continue
+        }
+        return nil
+    }
+
+    if kind == nil { return nil }
+    if idx + 1 >= words.length { return nil }
+
+    var rawName = words[idx + 1]
+    rawName = rawName.split("(")[0]
+    rawName = rawName.split("{")[0]
+    rawName = rawName.split(":")[0]
+    let name = rawName.trim()
+    if name.length == 0 { return nil }
+
+    return new Decl(
+        name: name,
+        kind: kind!,
+        line: lineNo,
+        endLine: lineNo,
+        signature: t
+    )
+}
+
+func parseDecls(lines: [String]) -> [Decl] {
+    var result: [Decl] = []
+    var stack: [Decl] = []
+    var i = 0
+    while i < lines.length {
+        let d = detectDecl(raw: lines[i], lineNo: i)
+        if d != nil {
+            let decl = d!
+            decl.endLine = findBlockEnd(lines: lines, start: i)
+            let code = stripComment(line: lines[i])
+            let opens = countOccurrences(s: code, sub: "{")
+            let closes = countOccurrences(s: code, sub: "}")
+
+            while stack.length > 0 && stack[stack.length - 1].endLine < i {
+                stack.pop()
+            }
+            if stack.length > 0 {
+                stack[stack.length - 1].children.push(decl)
+            } else {
+                result.push(decl)
+            }
+            if opens > closes {
+                stack.push(decl)
+            }
+        }
+        i += 1
+    }
+    return result
+}
+
+func kindToVscode(kind: DeclKind) -> Any {
+    switch kind {
+    case .classDecl:  return vscode.SymbolKind.Class
+    case .structDecl: return vscode.SymbolKind.Struct
+    case .enumDecl:   return vscode.SymbolKind.Enum
+    case .funcDecl:   return vscode.SymbolKind.Function
+    case .letDecl:    return vscode.SymbolKind.Variable
+    }
+    return vscode.SymbolKind.Variable
+}
+
+func toVscodeSymbol(d: Decl) -> Any {
+    let startPos = new vscode.Position(d.line, 0)
+    let endPos = new vscode.Position(d.endLine, 1000)
+    let range = new vscode.Range(startPos, endPos)
+    let sel = new vscode.Range(startPos, startPos)
+    let sym = new vscode.DocumentSymbol(
+        d.name,
+        d.signature,
+        kindToVscode(kind: d.kind),
+        range,
+        sel
+    )
+    var ch: [Any] = []
+    for c in d.children {
+        ch.push(toVscodeSymbol(c))
+    }
+    sym.children = ch
+    return sym
+}
+
+func wordAt(line: String, col: Int) -> String {
+    if col >= line.length { return "" }
+    var start = col
+    while start > 0 {
+        if !isIdentPart(charAt(s: line, i: start - 1)) { break }
+        start -= 1
+    }
+    var end = col
+    while end < line.length {
+        if !isIdentPart(charAt(s: line, i: end)) { break }
+        end += 1
+    }
+    return line.substring(start, end)
+}
+
+/* ---------------- Providers ---------------- */
+
+class SymbolProvider {
+    func provideDocumentSymbols(doc: Any, token: Any) -> [Any] {
+        let text = doc.getText()
+        let lines = text.split("\n")
+        let decls = parseDecls(lines: lines)
+        var result: [Any] = []
+        for d in decls {
+            result.push(toVscodeSymbol(d))
+        }
+        return result
+    }
+}
+
+class FoldingProvider {
+    func provideFoldingRanges(doc: Any, context: Any, token: Any) -> [Any] {
+        let text = doc.getText()
+        let lines = text.split("\n")
+        var ranges: [Any] = []
+        var stack: [Int] = []
+
+        var i = 0
+        while i < lines.length {
+            let code = stripComment(line: lines[i])
+            let opens = countOccurrences(s: code, sub: "{")
+            let closes = countOccurrences(s: code, sub: "}")
+            var j = 0
+            while j < opens {
+                stack.push(i)
+                j += 1
+            }
+            j = 0
+            while j < closes && stack.length > 0 {
+                let start = stack.pop()!
+                if i - start > 1 {
+                    ranges.push(new vscode.FoldingRange(start, i, vscode.FoldingRangeKind.Region))
+                }
+                j += 1
+            }
+            i += 1
+        }
+        return ranges
+    }
+}
+
+class HoverProvider {
+    let descriptions: Any
+
+    init() {
+        self.descriptions = [
+            "let": "Immutable binding. Compiles to JS `const`.",
+            "var": "Mutable binding. Compiles to JS `let`.",
+            "func": "Function declaration.",
+            "struct": "Value type. Auto-frozen with `Object.freeze` if all fields are `let`.",
+            "class": "Reference type. Supports `extends`, `super.init`, `override`.",
+            "enum": "Tagged union. Cases may carry a payload.",
+            "guard": "Early exit. `else` must terminate (return / throw / break / continue).",
+            "switch": "Pattern matching. Supports enum cases, ranges (`400...499`), `where`.",
+            "async": "Marks a function as async (returns Promise).",
+            "await": "Suspends until the Promise resolves.",
+            "try": "Wraps code that may throw. Paired with `catch`.",
+            "throw": "Throws an error. Caught by `try/catch`.",
+            "new": "Constructs a class. Auto-added for classes declared in the same module.",
+            "nil": "Null-ish. Compiles to JS `null`.",
+            "self": "Current instance. `this` in classes, `_self` in structs.",
+            "super": "Parent class. Used as `super.init(...)`.",
+            "import": "ESM import. Bare specifiers (`vscode`, `node:fs`) stay as-is; `.sws` paths become `.js`.",
+            "export": "ESM export. Makes declaration visible to importers.",
+            "implements": "Interface contract. Erased at codegen (JS is duck-typed).",
+            "extends": "Inheritance. Only for `class`."
+        ]
+    }
+
+    func provideHover(doc: Any, position: Any, token: Any) -> Any {
+        let line = doc.lineAt(position.line).text
+        let word = wordAt(line: line, col: position.character)
+        if word.length == 0 { return nil }
+
+        let desc = self.descriptions[word]
+        if desc == nil { return nil }
+
+        return new vscode.Hover("**\(word)** — \(desc)")
+    }
+}
+
+class CompletionProvider {
+    let keywords: [String]
+    let types: [String]
+    let builtins: [String]
+
+    init() {
+        self.keywords = [
+            "let", "var", "func", "return", "if", "else", "for", "in",
+            "while", "break", "continue", "struct", "enum", "class",
+            "import", "export", "try", "throw", "catch", "async", "await",
+            "true", "false", "nil", "self", "super", "new", "static",
+            "private", "public", "internal", "override", "lazy", "throws",
+            "guard", "implements", "extends"
+        ]
+        self.types = ["Int", "Double", "Float", "String", "Bool", "Any", "Void"]
+        self.builtins = [
+            "print", "String", "Int", "Double", "Bool",
+            "abs", "min", "max", "round", "floor", "ceil"
+        ]
+    }
+
+    func provideCompletionItems(doc: Any, position: Any, token: Any, context: Any) -> [Any] {
+        var items: [Any] = []
+        for k in self.keywords {
+            items.push(new vscode.CompletionItem(k, vscode.CompletionItemKind.Keyword))
+        }
+        for t in self.types {
+            items.push(new vscode.CompletionItem(t, vscode.CompletionItemKind.Class))
+        }
+        for b in self.builtins {
+            items.push(new vscode.CompletionItem(b, vscode.CompletionItemKind.Function))
+        }
+        return items
+    }
+}
+
+/* ---------------- Entry ---------------- */
+
+export func activate(context: Any) {
+    let sel = "swiftscript"
+
+    let sym = new SymbolProvider()
+    context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider(sel, sym))
+
+    let fold = new FoldingProvider()
+    context.subscriptions.push(vscode.languages.registerFoldingRangeProvider(sel, fold))
+
+    let hov = new HoverProvider()
+    context.subscriptions.push(vscode.languages.registerHoverProvider(sel, hov))
+
+    let comp = new CompletionProvider()
+    context.subscriptions.push(vscode.languages.registerCompletionItemProvider(sel, comp, "."))
+}
+
+export func deactivate() {
+}

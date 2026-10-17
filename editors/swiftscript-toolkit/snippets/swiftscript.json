@@ -1,0 +1,92 @@
+{
+  "Function": {
+    "prefix": "func",
+    "body": ["func ${1:name}(${2:args}) -> ${3:ReturnType} {", "\t$0", "}"],
+    "description": "Function declaration"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": ["struct ${1:Name} {", "\tlet ${2:field}: ${3:Type}", "\t$0", "}"],
+    "description": "Struct declaration"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": ["class ${1:Name} {", "\tlet ${2:field}: ${3:Type}", "", "\tinit(${2:field}: ${3:Type}) {", "\t\tself.${2:field} = ${2:field}", "\t}", "\t$0", "}"],
+    "description": "Class with init"
+  },
+  "Class (extends)": {
+    "prefix": "classext",
+    "body": ["class ${1:Child} extends ${2:Parent} {", "\tinit(${3:args}) {", "\t\tsuper.init(${3:args})", "\t}", "", "\toverride func ${4:method}() -> ${5:Type} {", "\t\t$0", "\t}", "}"],
+    "description": "Class with extends and override"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": ["enum ${1:Name} {", "\tcase ${2:first}", "\tcase ${3:second}(${4:String})", "\t$0", "}"],
+    "description": "Enum with payload case"
+  },
+  "Switch": {
+    "prefix": "switch",
+    "body": ["switch ${1:subject} {", "case .${2:caseName}:", "\treturn ${3:value}", "default:", "\treturn ${4:fallback}", "}"],
+    "description": "Switch statement"
+  },
+  "Switch (enum + bindings)": {
+    "prefix": "switchenum",
+    "body": ["switch ${1:subject} {", "case .${2:caseName}(let ${3:val}):", "\treturn ${4:value}", "case .${5:other}:", "\treturn ${6:otherValue}", "}"],
+    "description": "Switch over enum with bindings"
+  },
+  "If let": {
+    "prefix": "iflet",
+    "body": ["if let ${1:name} = ${2:optional} {", "\t$0", "}"],
+    "description": "Unwrap optional with if let"
+  },
+  "If let + else": {
+    "prefix": "iflete",
+    "body": ["if let ${1:name} = ${2:optional} {", "\t$3", "} else {", "\t$0", "}"],
+    "description": "Unwrap optional with fallback"
+  },
+  "Guard let": {
+    "prefix": "guardlet",
+    "body": ["guard let ${1:name} = ${2:optional} else {", "\treturn", "}"],
+    "description": "Early exit if nil"
+  },
+  "For in": {
+    "prefix": "forin",
+    "body": ["for ${1:item} in ${2:items} {", "\t$0", "}"],
+    "description": "For-in loop"
+  },
+  "While": {
+    "prefix": "while",
+    "body": ["while ${1:condition} {", "\t$0", "}"],
+    "description": "While loop"
+  },
+  "Try/catch": {
+    "prefix": "trycatch",
+    "body": ["try {", "\t$1", "} catch ${2:e} {", "\t$0", "}"],
+    "description": "Try/catch block"
+  },
+  "Async function": {
+    "prefix": "asyncfunc",
+    "body": ["async func ${1:name}(${2:args}) -> ${3:ReturnType} {", "\t${4:let value = await ${5:something}()}", "\t$0", "}"],
+    "description": "Async function with await"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": ["import * as ${1:alias} from \"${2:module}\""],
+    "description": "Namespace import"
+  },
+  "Import (named)": {
+    "prefix": "importnamed",
+    "body": ["import { ${1:name} } from \"${2:./path.sws}\""],
+    "description": "Named import"
+  },
+  "Export function": {
+    "prefix": "exportfunc",
+    "body": ["export func ${1:name}(${2:args}) -> ${3:ReturnType} {", "\t$0", "}"],
+    "description": "Exported function"
+  },
+  "VSCode command": {
+    "prefix": "vscmd",
+    "body": ["let ${1:cmd} = vscode.commands.registerCommand(\"${2:prefix.command}\", { ${3:args} in", "\t${4:vscode.window.showInformationMessage(\"${5:hello}\")}", "})", "context.subscriptions.push(${1:cmd})"],
+    "description": "Register a VSCode command (SwiftScript extension pattern)"
+  }
+}
