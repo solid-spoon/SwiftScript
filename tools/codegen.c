@@ -56,10 +56,18 @@ static SS ss_clone(SS *src) {
 }
 
 typedef struct {
+    char *name;
+    SS cases;
+} EnumDef;
+
+typedef struct {
     SS struct_names;
     SS class_names;
+    SS globals;
     struct Pair { char *k; char *v; } *enum_cases;
     int enum_case_count, enum_case_cap;
+    EnumDef *enums;
+    int enum_count, enum_cap;
     SS fields;
     const char *self_prefix;
     SS locals;
@@ -112,12 +120,23 @@ static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, char **bindings_ou
 static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
         Node *s = prog->stmts->items[i];
+        if (s->name) ss_add(&ctx->globals, s->name); // let, var, func, struct, enum, class
+        
         if (s->kind == N_STRUCT) ss_add(&ctx->struct_names, s->name);
         if (s->kind == N_CLASS)  ss_add(&ctx->class_names, s->name);
         if (s->kind == N_ENUM) {
+            if (ctx->enum_count == ctx->enum_cap) {
+                ctx->enum_cap = ctx->enum_cap ? ctx->enum_cap * 2 : 8;
+                ctx->enums = xrealloc(ctx->enums, sizeof(EnumDef) * ctx->enum_cap);
+            }
+            EnumDef *def = &ctx->enums[ctx->enum_count++];
+            def->name = xstrdup(s->name);
+            memset(&def->cases, 0, sizeof(SS));
+
             for (int j = 0; j < s->cases->count; j++) {
                 Node *c = s->cases->items[j];
                 enum_add(ctx, c->name, s->name);
+                ss_add(&def->cases, c->name);
             }
         }
     }
@@ -209,8 +228,10 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     }
     case N_TRY: {
         char *body = gen_stmt(n->a, ctx);
-        char *handler = gen_stmt(n->b, ctx);
+        Ctx handler_ctx = ctx_copy(ctx);
         const char *cvar = n->name ? n->name : "_e";
+        ss_add(&handler_ctx.locals, cvar);
+        char *handler = gen_stmt(n->b, &handler_ctx);
         sb_printf(&sb, "try %s catch (%s) %s", body, cvar, handler);
         free(body); free(handler);
         break;
@@ -550,6 +571,7 @@ static char *gen_switch(Node *n, Ctx *ctx) {
                         sb_put(&binds, bindings[k]);
                         sb_putc(&binds, ' ');
                         ss_add(&bind_names, namebuf);
+                        ss_add(&sw.locals, namebuf); // register binding in scope
                     }
                 }
                 free(bindings[k]);
@@ -576,6 +598,60 @@ static char *gen_switch(Node *n, Ctx *ctx) {
         }
         sb_printf(&sb, "    break %s;\n  }\n", label);
         free(condstr); free(bindstr);
+    }
+
+    // Exhaustiveness check
+    if (!n->body) {
+        SS covered = {0};
+        for (int i = 0; i < n->cases->count; i++) {
+            Node *c = n->cases->items[i];
+            for (int j = 0; j < c->patterns->count; j++) {
+                Node *p = c->patterns->items[j];
+                if (p->kind == N_PAT_ENUM) {
+                    ss_add(&covered, p->name);
+                }
+            }
+        }
+
+        if (covered.count > 0) {
+            int matches = 0;
+            EnumDef *match = NULL;
+            for (int i = 0; i < ctx->enum_count; i++) {
+                EnumDef *e = &ctx->enums[i];
+                int valid = 1;
+                for (int j = 0; j < covered.count; j++) {
+                    if (!ss_has(&e->cases, covered.items[j])) {
+                        valid = 0;
+                        break;
+                    }
+                }
+                if (valid) {
+                    matches++;
+                    match = e;
+                }
+            }
+
+            if (matches == 1) {
+                StrBuf missing; sb_init(&missing);
+                int missing_count = 0;
+                for (int i = 0; i < match->cases.count; i++) {
+                    if (!ss_has(&covered, match->cases.items[i])) {
+                        if (missing_count > 0) sb_put(&missing, ", ");
+                        sb_printf(&missing, ".%s", match->cases.items[i]);
+                        missing_count++;
+                    }
+                }
+                if (missing_count > 0) {
+                    codegen_error(n->line, n->col,
+                        "switch on enum '%s' is not exhaustive (missing: %s); add a 'default' case",
+                        match->name, missing.buf);
+                }
+                sb_free(&missing);
+            }
+        }
+        // cleanup covered
+        for (int i = 0; i < covered.count; i++) free(covered.items[i]);
+        free(covered.items);
     }
 
     if (n->body) {
@@ -851,6 +927,16 @@ static char *gen_class(Node *n, Ctx *parent) {
     return sb_take(&sb);
 }
 
+static const char *BUILTINS[] = {
+    "print", "String", "Int", "Double", "Bool", "abs", "min", "max", "round", "floor", "ceil",
+    "_force", "_range", "_rangeIn", "console", "Math", "JSON", "Object", "Array", "Error", "document", "window",
+    NULL
+};
+static int is_builtin(const char *name) {
+    for (int i = 0; BUILTINS[i]; i++) if (strcmp(BUILTINS[i], name) == 0) return 1;
+    return 0;
+}
+
 static char *gen_expr(Node *n, Ctx *ctx) {
     StrBuf sb; sb_init(&sb);
     switch (n->kind) {
@@ -875,14 +961,27 @@ static char *gen_expr(Node *n, Ctx *ctx) {
         sb_printf(&sb, "%.17g", n->num);
         return sb_take(&sb);
     case N_ID: {
+        if (n->name && strcmp(n->name, "super") == 0) return xstrdup("super");
+
         if (n->name && strcmp(n->name, "self") == 0 && ctx->self_prefix)
             return xstrdup(ctx->self_prefix);
+        
+        // Check if it's a local or field
         if (ctx->fields.count && ss_has(&ctx->fields, n->name) &&
             !(ctx->locals.count && ss_has(&ctx->locals, n->name))) {
             const char *p = ctx->self_prefix ? ctx->self_prefix : "_self";
             sb_printf(&sb, "%s.%s", p, n->name);
             return sb_take(&sb);
         }
+
+        // Check if it's a global or builtin
+        if (!is_builtin(n->name) && 
+            !ss_has(&ctx->globals, n->name) && 
+            !ss_has(&ctx->locals, n->name)) 
+        {
+            codegen_error(n->line, n->col, "Undefined identifier '%s'", n->name);
+        }
+
         return xstrdup(n->name);
     }
     case N_ENUM_CASE: {
@@ -1117,8 +1216,21 @@ static char *gen_closure(Node *n, Ctx *ctx) {
         }
     }
     Ctx inner = ctx_copy(ctx);
-    if (n->params) for (int i = 0; i < n->params->count; i++)
-        ss_add(&inner.locals, ((Node*)n->params->items[i])->name);
+    if (n->params) {
+        for (int i = 0; i < n->params->count; i++)
+            ss_add(&inner.locals, ((Node*)n->params->items[i])->name);
+    } else {
+        int max_idx = -1, found = 0;
+        if (n->body) {
+            for (int i = 0; i < n->body->count; i++)
+                collect_dollar((Node*)n->body->items[i], &max_idx, &found);
+        }
+        for (int i = 0; i <= max_idx; i++) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "$%d", i);
+            ss_add(&inner.locals, buf);
+        }
+    }
 
     char *body = block_returning(n->body, &inner);
     char *pstr = sb_take(&params);
