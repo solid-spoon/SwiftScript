@@ -9,18 +9,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
 
-#define PATHBUF 4096
-#define MAXPATH (PATHBUF * 4)
+#if defined(__unix__) || defined(__APPLE__) || defined(__CYGWIN__) || defined(__MSYS__)
+#define SWSC_POSIX
+#include <sys/wait.h>
+#endif
 
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32) && !defined(__CYGWIN__) && !defined(__MSYS__)
 #include <direct.h>
 #define mkdir(path, mode) _mkdir(path)
 #endif
 
+#define PATHBUF 4096
+#define MAXPATH (PATHBUF * 4)
 
 const char *SWIFTS_RUNTIME =
 "const _force = (x) => { if (x === null || x === undefined) throw new Error(\"Force unwrap of nil\"); return x; };\n"
@@ -43,6 +48,7 @@ const char *SWIFTS_RUNTIME =
 "const _rangeIn = (a, b) => { const r = []; for (let i = a; i <= b; i++) r.push(i); return r; };\n";
 
 /* ---------- fs helpers ---------- */
+
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -87,7 +93,6 @@ static const char *path_ext(const char *p) {
     return dot ? dot : "";
 }
 
-/* foo.sws → foo.js,  foo → foo.js */
 static void derive_js_path(const char *src, char *out, size_t cap) {
     snprintf(out, cap, "%s", src);
     size_t n = strlen(out);
@@ -118,23 +123,48 @@ static int has_module_syntax(const char *js) {
     return 0;
 }
 
-static int compile_file(const char *src_path, const char *out_path) {
-    char *src = read_file(src_path);
-    if (!src) { fprintf(stderr, "swsc: cannot read %s\n", src_path); return 1; }
+/* ---------- shared pipeline: read + lex + parse ---------- */
 
+/* On success returns AST and writes malloc'd source into *out_src.
+   On failure prints a diagnostic to stderr and returns NULL. */
+static Node *parse_file(const char *src_path, char **out_src) {
+    char *src = read_file(src_path);
+    if (!src) {
+        fprintf(stderr, "swsc: cannot read %s: %s\n", src_path, strerror(errno));
+        return NULL;
+    }
     SSError err = {0};
     TokenList *toks = tokenize(src, &err);
     if (!toks) {
         fprintf(stderr, "%s:%d:%d: %s\n", src_path, err.line, err.col, err.msg);
-        free(src); return 1;
+        free(src);
+        return NULL;
     }
     Node *ast = parse(toks, &err);
     free_tokens(toks);
     if (!ast) {
         fprintf(stderr, "%s:%d:%d: %s\n", src_path, err.line, err.col, err.msg);
-        free(src); return 1;
+        free(src);
+        return NULL;
     }
+    *out_src = src;
+    return ast;
+}
+
+/* ---------- swsc build ---------- */
+
+static int compile_file(const char *src_path, const char *out_path) {
+    char *src;
+    Node *ast = parse_file(src_path, &src);
+    if (!ast) return 1;
+
     char *user_js = gen_program(ast);
+    if (!user_js) {
+        fprintf(stderr, "%s:%d:%d: %s\n", src_path,
+                gen_error_line(), gen_error_col(), gen_error_msg());
+        free(src);
+        return 1;
+    }
 
     StrBuf out; sb_init(&out);
     sb_put(&out, SWIFTS_RUNTIME);
@@ -148,14 +178,14 @@ static int compile_file(const char *src_path, const char *out_path) {
     }
     sb_put(&out, "\n");
 
-    /* ensure dir */
     char dir[MAXPATH];
     snprintf(dir, sizeof(dir), "%s", out_path);
     char *slash = strrchr(dir, '/');
     if (slash) { *slash = '\0'; mkdir_p(dir); }
 
     int rc = write_file(out_path, out.buf);
-    if (rc != 0) fprintf(stderr, "swsc: cannot write %s: %s\n", out_path, strerror(errno));
+    if (rc != 0)
+        fprintf(stderr, "swsc: cannot write %s: %s\n", out_path, strerror(errno));
 
     sb_free(&out);
     free(user_js);
@@ -163,14 +193,42 @@ static int compile_file(const char *src_path, const char *out_path) {
     return rc ? 1 : 0;
 }
 
-static int walk(const char *src_root, const char *out_root, const char *rel) {
+/* ---------- swsc check ---------- */
+
+/* Compiles in memory; runs codegen for its diagnostics.
+   Writes nothing. Returns 0 on success, 1 on diagnostic. */
+static int check_file(const char *src_path) {
+    char *src;
+    Node *ast = parse_file(src_path, &src);
+    if (!ast) return 1;
+
+    char *user_js = gen_program(ast);
+    if (!user_js) {
+        fprintf(stderr, "%s:%d:%d: %s\n", src_path,
+                gen_error_line(), gen_error_col(), gen_error_msg());
+        free(src);
+        return 1;
+    }
+    free(user_js);
+    free(src);
+    return 0;
+}
+
+/* ---------- directory walk ---------- */
+
+/* check_only=1 -> check_file, out_root ignored.
+   check_only=0 -> compile_file with out_path derived from rel. */
+static int walk(const char *src_root, const char *out_root,
+                const char *rel, int check_only) {
     char src_dir[MAXPATH], out_dir[MAXPATH];
     if (*rel) {
         snprintf(src_dir, sizeof(src_dir), "%s/%s", src_root, rel);
-        snprintf(out_dir, sizeof(out_dir), "%s/%s", out_root, rel);
+        if (!check_only)
+            snprintf(out_dir, sizeof(out_dir), "%s/%s", out_root, rel);
     } else {
         snprintf(src_dir, sizeof(src_dir), "%s", src_root);
-        snprintf(out_dir, sizeof(out_dir), "%s", out_root);
+        if (!check_only)
+            snprintf(out_dir, sizeof(out_dir), "%s", out_root);
     }
 
     DIR *d = opendir(src_dir);
@@ -194,34 +252,200 @@ static int walk(const char *src_root, const char *out_root, const char *rel) {
         if (stat(full, &st) != 0) continue;
 
         if (S_ISDIR(st.st_mode)) {
-            errors += walk(src_root, out_root, child_rel);
+            errors += walk(src_root, out_root, child_rel, check_only);
         } else if (S_ISREG(st.st_mode) && strcmp(path_ext(e->d_name), ".sws") == 0) {
-            /* out path: same rel but .js */
-            char out_rel[MAXPATH];
-            snprintf(out_rel, sizeof(out_rel), "%s", child_rel);
-            size_t n = strlen(out_rel);
-            out_rel[n - 4] = '\0'; /* strip .sws */
-            strncat(out_rel, ".js", sizeof(out_rel) - strlen(out_rel) - 1);
+            if (check_only) {
+                errors += check_file(full);
+            } else {
+                char out_rel[MAXPATH];
+                snprintf(out_rel, sizeof(out_rel), "%s", child_rel);
+                size_t n = strlen(out_rel);
+                out_rel[n - 4] = '\0';
+                strncat(out_rel, ".js", sizeof(out_rel) - strlen(out_rel) - 1);
 
-            char out_path[MAXPATH];
-            snprintf(out_path, sizeof(out_path), "%s/%s", out_root, out_rel);
-            mkdir_p(out_root);
-            errors += compile_file(full, out_path);
+                char out_path[MAXPATH];
+                snprintf(out_path, sizeof(out_path), "%s/%s", out_root, out_rel);
+                mkdir_p(out_root);
+                errors += compile_file(full, out_path);
+            }
         }
     }
     closedir(d);
     return errors;
 }
 
-int main(int argc, char **argv) {
-    if (argc < 3 || strcmp(argv[1], "build") != 0) {
-        fprintf(stderr,
-            "usage: %s build <path> [-o <out>]\n"
-            "  Compile every .sws file under <path> into .js.\n"
-            "  Without -o, output goes next to the input (.sws -> .js).\n",
-            argv[0]);
+/* ---------- swsc run ---------- */
+
+/* Tries TMPDIR / TEMP / TMP / "." and probes for a free name. */
+static char *make_tmp_js(void) {
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir) tmpdir = getenv("TEMP");
+    if (!tmpdir || !*tmpdir) tmpdir = getenv("TMP");
+    if (!tmpdir || !*tmpdir) tmpdir = ".";
+
+    unsigned seed = (unsigned)time(NULL);
+    for (unsigned attempt = 0; attempt < 1000; attempt++) {
+        size_t n = strlen(tmpdir) + 64;
+        char *path = xmalloc(n);
+        snprintf(path, n, "%s/swsc-%u-%u.js", tmpdir, seed, attempt);
+        FILE *f = fopen(path, "rb");
+        if (!f) return path;
+        fclose(f);
+        free(path);
+    }
+    fprintf(stderr, "swsc: cannot find a free temp filename in %s\n", tmpdir);
+    return NULL;
+}
+
+static void sb_put_quoted(StrBuf *sb, const char *s) {
+    sb_putc(sb, '"');
+    for (const char *p = s; *p; p++) {
+        if (*p == '"' || *p == '\\') sb_putc(sb, '\\');
+        sb_putc(sb, *p);
+    }
+    sb_putc(sb, '"');
+}
+
+static int run_node(const char *tmpfile, int extra_argc, char **extra_argv) {
+    StrBuf cmd; sb_init(&cmd);
+    sb_put(&cmd, "node ");
+    sb_put_quoted(&cmd, tmpfile);
+    for (int i = 0; i < extra_argc; i++) {
+        sb_putc(&cmd, ' ');
+        sb_put_quoted(&cmd, extra_argv[i]);
+    }
+
+    int rc = system(cmd.buf);
+    sb_free(&cmd);
+
+#ifdef SWSC_POSIX
+    if (rc == -1) return 2;
+    if (WIFEXITED(rc))   return WEXITSTATUS(rc);
+    if (WIFSIGNALED(rc)) return 128 + WTERMSIG(rc);
+    return 2;
+#else
+    return (rc == -1) ? 2 : rc;
+#endif
+}
+
+static int cmd_run(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s run <file.sws> [-- args...]\n", argv[0]);
         return 2;
     }
+    const char *src_path = argv[2];
+
+    int extra_argc = 0;
+    char **extra_argv = NULL;
+    if (argc > 3) {
+        if (strcmp(argv[3], "--") != 0) {
+            fprintf(stderr, "swsc: unexpected argument '%s' (use -- to pass args)\n", argv[3]);
+            return 2;
+        }
+        extra_argv = &argv[4];
+        extra_argc = argc - 4;
+    }
+
+    struct stat st;
+    if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr, "swsc: cannot access %s: %s\n", src_path, strerror(errno));
+        return 2;
+    }
+
+    char *src;
+    Node *ast = parse_file(src_path, &src);
+    if (!ast) return 1;
+
+    char *user_js = gen_program(ast);
+    if (!user_js) {
+        fprintf(stderr, "%s:%d:%d: %s\n", src_path,
+                gen_error_line(), gen_error_col(), gen_error_msg());
+        free(src);
+        return 1;
+    }
+
+    StrBuf out; sb_init(&out);
+    sb_put(&out, SWIFTS_RUNTIME);
+    sb_put(&out, "\n");
+    if (has_module_syntax(user_js)) {
+        sb_put(&out, user_js);
+    } else {
+        sb_put(&out, "(() => {\n");
+        sb_put(&out, user_js);
+        sb_put(&out, "\n})();\n");
+    }
+    sb_put(&out, "\n");
+
+    char *tmp = make_tmp_js();
+    if (!tmp) {
+        sb_free(&out); free(user_js); free(src);
+        return 2;
+    }
+    if (write_file(tmp, out.buf) != 0) {
+        fprintf(stderr, "swsc: cannot write temp %s: %s\n", tmp, strerror(errno));
+        remove(tmp); free(tmp);
+        sb_free(&out); free(user_js); free(src);
+        return 2;
+    }
+
+    int rc = run_node(tmp, extra_argc, extra_argv);
+
+    remove(tmp);
+    free(tmp);
+    sb_free(&out);
+    free(user_js);
+    free(src);
+    return rc;
+}
+
+/* ---------- main ---------- */
+
+static void usage(const char *argv0) {
+    fprintf(stderr,
+        "usage: %s <command> [options]\n"
+        "  build <path> [-o <out>]        compile .sws -> .js\n"
+        "  check <path>                   compile-only, report errors, no output\n"
+        "  run   <file.sws> [-- args...]  compile and run\n",
+        argv0);
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) { usage(argv[0]); return 2; }
+
+    if (strcmp(argv[1], "check") == 0) {
+        if (argc < 3) { usage(argv[0]); return 2; }
+        const char *src = argv[2];
+        if (argc > 3) {
+            fprintf(stderr, "swsc: unknown argument '%s'\n", argv[3]);
+            return 2;
+        }
+
+        struct stat st;
+        if (stat(src, &st) != 0) {
+            fprintf(stderr, "swsc: cannot access %s: %s\n", src, strerror(errno));
+            return 2;
+        }
+
+        if (S_ISREG(st.st_mode)) return check_file(src) ? 1 : 0;
+
+        if (!S_ISDIR(st.st_mode)) {
+            fprintf(stderr, "swsc: %s is neither a file nor a directory\n", src);
+            return 2;
+        }
+
+        int rc = walk(src, NULL, "", 1);
+        if (rc) fprintf(stderr, "swsc: %d error(s)\n", rc);
+        return rc ? 1 : 0;
+    }
+
+    if (strcmp(argv[1], "run") == 0) return cmd_run(argc, argv);
+
+    if (strcmp(argv[1], "build") != 0) {
+        fprintf(stderr, "swsc: unknown command '%s'\n", argv[1]);
+        return 2;
+    }
+
+    if (argc < 3) { usage(argv[0]); return 2; }
 
     const char *src = argv[2];
     const char *out = NULL;
@@ -261,7 +485,7 @@ int main(int argc, char **argv) {
             if (out_is_dir) {
                 const char *base = strrchr(src, '/');
                 base = base ? base + 1 : src;
-                char base_js[4096];
+                char base_js[PATHBUF];
                 derive_js_path(base, base_js, sizeof(base_js));
                 snprintf(derived, sizeof(derived), "%s/%s", out, base_js);
                 out = derived;
@@ -277,7 +501,7 @@ int main(int argc, char **argv) {
 
     if (!out) out = src;
     mkdir_p(out);
-    int rc = walk(src, out, "");
+    int rc = walk(src, out, "", 0);
     if (rc) fprintf(stderr, "swsc: %d error(s)\n", rc);
     return rc ? 1 : 0;
 }

@@ -3,9 +3,35 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 static int _sw_counter = 0;
 static int _let_bind_counter = 0;
+
+/* codegen diagnostics: set once, first error wins. */
+typedef struct {
+    int has_err;
+    int line, col;
+    char msg[256];
+} GenError;
+
+static GenError _gen;
+
+static void codegen_error(int line, int col, const char *fmt, ...) {
+    if (_gen.has_err) return;
+    _gen.line = line;
+    _gen.col = col;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(_gen.msg, sizeof(_gen.msg), fmt, ap);
+    va_end(ap);
+    _gen.has_err = 1;
+}
+
+int         gen_had_error(void) { return _gen.has_err; }
+const char *gen_error_msg(void) { return _gen.msg; }
+int         gen_error_line(void){ return _gen.line; }
+int         gen_error_col(void) { return _gen.col; }
 
 typedef struct { char **items; int count, cap; } SS;
 
@@ -210,7 +236,8 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     }
     case N_CONTINUE: sb_put(&sb, "continue;"); break;
     default:
-        sb_printf(&sb, "/* unknown stmt kind=%d */", n->kind);
+        codegen_error(n->line, n->col, "codegen: unknown statement kind %d", n->kind);
+        sb_printf(&sb, "/* codegen error */");
     }
     return sb_take(&sb);
 }
@@ -301,9 +328,8 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
 
 static char *gen_guard_stmt(Node *n, Ctx *ctx) {
     if (n->b && n->b->kind == N_BLOCK && !block_terminates(n->b->stmts)) {
-        fprintf(stderr,
-            "swsc: guard else-block must end with return, throw, break, or continue\n");
-        exit(2);
+        codegen_error(n->line, n->col,
+            "guard else-block must end with return, throw, break, or continue");
     }
     StrBuf sb; sb_init(&sb);
     int id = ++_let_bind_counter;
@@ -867,7 +893,8 @@ static char *gen_expr(Node *n, Ctx *ctx) {
         return sb_take(&sb);
     }
     default:
-        sb_printf(&sb, "/* unknown expr kind=%d */", n->kind);
+        codegen_error(n->line, n->col, "codegen: unknown expression kind %d", n->kind);
+        sb_printf(&sb, "/* codegen error */");
         return sb_take(&sb);
     }
 }
@@ -894,12 +921,13 @@ static char *gen_call(Node *n, Ctx *ctx) {
             Node *a = n->args->items[i];
             if (i) sb_put(&sb, ", ");
             if (!a->name) {
-                fprintf(stderr,
-                    "swsc: struct %s: named arguments required in constructor\n",
+                codegen_error(n->a->line, n->a->col,
+                    "struct %s: named arguments required in constructor",
                     n->a->name);
-                exit(2);
+                sb_put(&sb, "_invalid_: ");
+            } else {
+                sb_printf(&sb, "%s: ", a->name);
             }
-            sb_printf(&sb, "%s: ", a->name);
             char *v = gen_expr(a->a, ctx);
             sb_put(&sb, v); free(v);
         }
@@ -1032,6 +1060,8 @@ static char *gen_template(Node *n, Ctx *ctx) {
 char *gen_program(Node *prog) {
     _sw_counter = 0;
     _let_bind_counter = 0;
+    memset(&_gen, 0, sizeof(_gen));
+
     Ctx ctx; memset(&ctx, 0, sizeof(ctx));
     collect_decls(prog, &ctx);
     StrBuf sb; sb_init(&sb);
@@ -1039,6 +1069,10 @@ char *gen_program(Node *prog) {
         if (i) sb_putc(&sb, '\n');
         char *s = gen_stmt(prog->stmts->items[i], &ctx);
         sb_put(&sb, s); free(s);
+    }
+    if (_gen.has_err) {
+        sb_free(&sb);
+        return NULL;
     }
     return sb_take(&sb);
 }
