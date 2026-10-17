@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <errno.h>
 
 static const char *KEYWORDS[] = {
     "as", "async", "await", "break", "case", "catch", "class", "continue", 
@@ -14,7 +15,6 @@ static const char *KEYWORDS[] = {
     NULL
 };
 
-
 static int is_keyword(const char *w) {
     for (int i = 0; KEYWORDS[i]; i++)
         if (strcmp(KEYWORDS[i], w) == 0) return 1;
@@ -22,10 +22,10 @@ static int is_keyword(const char *w) {
 }
 
 static int is_id_start(int c) {
-    return isalpha((unsigned char)c) || c == '_' || c == '$';
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
 }
 static int is_id_part(int c) {
-    return isalnum((unsigned char)c) || c == '_' || c == '$';
+    return is_id_start(c) || (c >= '0' && c <= '9');
 }
 
 static void tl_push(TokenList *t, TokType type, char *value, double num, int line, int col) {
@@ -52,6 +52,14 @@ TokenList *tokenize(const char *src, SSError *err) {
     size_t i = 0;
     int line = 1, col = 1;
 
+    /* Skip UTF-8 BOM if present (common on Windows-authored files). */
+    if (n >= 3 &&
+        (unsigned char)src[0] == 0xEF &&
+        (unsigned char)src[1] == 0xBB &&
+        (unsigned char)src[2] == 0xBF) {
+        i = 3;
+    }
+
     #define ADV(k) do { \
         for (int _k = 0; _k < (k); _k++) { \
             if (i < n && src[i] == '\n') { line++; col = 1; } else col++; \
@@ -74,7 +82,7 @@ TokenList *tokenize(const char *src, SSError *err) {
             if (i >= n) {
                 if (err) { err->line = sl; err->col = sc;
                     snprintf(err->msg, sizeof(err->msg),
-                             "Незакрытый блочный комментарий"); }
+                             "Unterminated block comment"); }
                 free_tokens(toks);
                 return NULL;
             }
@@ -120,7 +128,7 @@ TokenList *tokenize(const char *src, SSError *err) {
                 if (digit_count == 0 || prev_underscore) {
                     if (err) { err->line = sl; err->col = sc;
                         snprintf(err->msg, sizeof(err->msg),
-                                 "Некорректный %s литерал", basename); }
+                                 "Invalid %s literal", basename); }
                     free_tokens(toks);
                     return NULL;
                 }
@@ -128,7 +136,9 @@ TokenList *tokenize(const char *src, SSError *err) {
                 size_t k = 0;
                 for (size_t j = 0; raw[j]; j++) if (raw[j] != '_') raw[k++] = raw[j];
                 raw[k] = '\0';
-                double val = (double)strtoll(raw, NULL, base);
+                errno = 0;
+                unsigned long long uv = strtoull(raw, NULL, base);
+                double val = (errno == ERANGE) ? strtod(raw, NULL) : (double)uv;
                 free(raw);
                 tl_push(toks, T_NUM, NULL, val, sl, sc);
                 continue;
@@ -212,7 +222,7 @@ TokenList *tokenize(const char *src, SSError *err) {
             }
             if (i >= n) {
                 if (err) { err->line = sl; err->col = sc;
-                    snprintf(err->msg, sizeof(err->msg), "Незакрытая строка"); }
+                    snprintf(err->msg, sizeof(err->msg), "Unterminated string"); }
                 sb_free(&sb);
                 free_tokens(toks);
                 return NULL;
@@ -254,7 +264,6 @@ TokenList *tokenize(const char *src, SSError *err) {
             }
         }
 
-        /* Односимвольные операторы */
         if (strchr("+-*/%<>()[]{},;:.=!?@_&|~^", (unsigned char)c)) {
             char buf[2] = { c, 0 };
             tl_push(toks, T_OP, xstrdup(buf), 0, sl, sc);
@@ -264,7 +273,7 @@ TokenList *tokenize(const char *src, SSError *err) {
 
         if (err) {
             err->line = sl; err->col = sc;
-            snprintf(err->msg, sizeof(err->msg), "Неизвестный символ '%c'", c);
+            snprintf(err->msg, sizeof(err->msg), "Unknown character '%c'", c);
         }
         free_tokens(toks);
         return NULL;

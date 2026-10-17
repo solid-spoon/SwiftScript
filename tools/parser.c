@@ -500,11 +500,16 @@ static Node *parse_class(P *p) {
             list_push(n->methods, parse_init(p));
         } else if (check_kw(p, "override")) {
             next_tok(p);
-            if (!check_kw(p, "func")) {
+            if (check_kw(p, "init")) {
+                list_push(n->methods, parse_init(p));
+            } else if (check_kw(p, "func")) {
+                list_push(n->methods, parse_func(p));
+            } else {
                 Token *g = peek(p, 0);
-                p_err(p, g->line, g->col, "After override expected func");
+                p_err(p, g->line, g->col,
+                      "After override expected func or init, got '%s'",
+                      g->value ? g->value : "<eof>");
             }
-            list_push(n->methods, parse_func(p));
         } else if (check_kw(p, "func")) {
             list_push(n->methods, parse_func(p));
         } else {
@@ -678,8 +683,7 @@ static Node *parse_for(P *p) {
     return n;
 }
 
-/* Common parser for if-let / guard-let condition lists.
-   Returns a condition chain: bindings in n->items, condition in n->a. */
+/* Common parser for if-let / guard-let condition lists. */
 static void parse_let_cond_list(P *p, Node *n) {
     n->items = list_new();
     while (1) {

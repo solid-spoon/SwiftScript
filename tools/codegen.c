@@ -335,6 +335,9 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
     int id = ++_let_bind_counter;
     int count = n->items->count;
 
+    /* Generate else-code exactly once and reuse it. */
+    char *else_code = gen_stmt(n->b, ctx);
+
     if (count > 0) {
         sb_put(&sb, "let ");
         for (int i = 0; i < count; i++) {
@@ -342,9 +345,7 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
             sb_printf(&sb, "_g%d_%d", id, i);
         }
         sb_put(&sb, ";\n");
-    }
 
-    if (count > 0) {
         sb_put(&sb, "if (");
         for (int i = 0; i < count; i++) {
             Node *b = n->items->items[i];
@@ -354,9 +355,7 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
             free(v);
         }
         sb_put(&sb, ") ");
-        char *e = gen_stmt(n->b, ctx);
-        sb_printf(&sb, "%s\n", e);
-        free(e);
+        sb_printf(&sb, "%s\n", else_code);
 
         for (int i = 0; i < count; i++) {
             Node *b = n->items->items[i];
@@ -369,12 +368,11 @@ static char *gen_guard_stmt(Node *n, Ctx *ctx) {
     if (n->a) {
         char *c = gen_expr(n->a, ctx);
         sb_printf(&sb, "if (!(%s)) ", c);
-        char *e = gen_stmt(n->b, ctx);
-        sb_printf(&sb, "%s\n", e);
-        free(e);
+        sb_printf(&sb, "%s\n", else_code);
         free(c);
     }
 
+    free(else_code);
     return sb_take(&sb);
 }
 
@@ -608,7 +606,18 @@ static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, char **bindings, i
     case N_PAT_WILD: sb_put(&sb, "true"); break;
     case N_PAT_LIT: {
         if (p->isnull) sb_printf(&sb, "%s === null", subj);
-        else if (p->sval) { char *j = xstrdup(p->sval); sb_printf(&sb, "%s === \"%s\"", subj, j); free(j); }
+        else if (p->sval) {
+            sb_printf(&sb, "%s === ", subj);
+            sb_putc(&sb, '"');
+            for (const char *s = p->sval; *s; s++) {
+                if (*s == '"' || *s == '\\') { sb_putc(&sb, '\\'); sb_putc(&sb, *s); }
+                else if (*s == '\n') sb_put(&sb, "\\n");
+                else if (*s == '\t') sb_put(&sb, "\\t");
+                else if (*s == '\r') sb_put(&sb, "\\r");
+                else sb_putc(&sb, *s);
+            }
+            sb_putc(&sb, '"');
+        }
         else if (p->is_bool) sb_printf(&sb, "%s === %s", subj, p->boolean ? "true" : "false");
         else sb_printf(&sb, "%s === %.17g", subj, p->num);
         break;
