@@ -147,6 +147,10 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     switch (n->kind) {
     case N_IMPORT: return gen_import(n);
     case N_LET: {
+        if (ss_has(&ctx->locals, n->name)) {
+            codegen_error(n->line, n->col,
+                "Duplicate declaration of '%s' in the same scope", n->name);
+        }
         const char *kw = (n->sval && strcmp(n->sval, "var") == 0) ? "let" : "const";
         char *v = n->a ? gen_expr(n->a, ctx) : xstrdup("undefined");
         ss_add(&ctx->locals, n->name);
@@ -286,6 +290,8 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
     int count = n->items->count;
     int has_else = (n->c != NULL);
 
+    Ctx body_ctx = ctx_copy(ctx);
+
     sb_put(&sb, "{\n");
     if (has_else)
         sb_printf(&sb, "  let _ok%d = false;\n", id);
@@ -299,12 +305,12 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
         sb_printf(&sb, "  if (_t%d_%d != null) {\n", id, i);
         sb_printf(&sb, "    %s %s = _t%d_%d;\n", kw, b->name, id, i);
 
-        ss_add(&ctx->locals, b->name);
+        ss_add(&body_ctx.locals, b->name);
         free(v);
     }
 
     if (n->a) {
-        char *c = gen_expr(n->a, ctx);
+        char *c = gen_expr(n->a, &body_ctx);
         sb_printf(&sb, "  if (%s) {\n", c);
         free(c);
     }
@@ -312,7 +318,7 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
 
     if (n->b && n->b->kind == N_BLOCK) {
         for (int i = 0; i < n->b->stmts->count; i++) {
-            char *s = gen_stmt(n->b->stmts->items[i], ctx);
+            char *s = gen_stmt(n->b->stmts->items[i], &body_ctx);
             sb_printf(&sb, "    %s\n", s);
             free(s);
         }
@@ -324,15 +330,15 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
     if (has_else) {
         sb_printf(&sb, "  if (!_ok%d) ", id);
         if (n->c->kind == N_IF) {
-            char *e = gen_if_stmt(n->c, ctx);
+            char *e = gen_if_stmt(n->c, ctx); // Original ctx
             sb_printf(&sb, "%s\n", e);
             free(e);
         } else if (n->c->kind == N_IF_LET) {
-            char *e = gen_if_let_stmt(n->c, ctx);
+            char *e = gen_if_let_stmt(n->c, ctx); // Original ctx
             sb_printf(&sb, "%s\n", e);
             free(e);
         } else {
-            char *e = gen_stmt(n->c, ctx);
+            char *e = gen_stmt(n->c, ctx); // Original ctx
             sb_printf(&sb, "%s\n", e);
             free(e);
         }
