@@ -2,7 +2,7 @@
 
 **Swift-inspired syntax that compiles to JavaScript.**
 
-Write Swift-like code — `func`, `struct`, `enum`, `switch`, `if let` — and get plain ESM JavaScript out. No runtime library, no framework, no VM. Just a compiler.
+Write Swift-like code — `func`, `struct`, `class`, `enum`, `switch`, `if let` — and get plain ESM JavaScript out. No runtime library, no framework, no VM. Just a compiler.
 
 ```swift
 enum Status {
@@ -60,12 +60,12 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 
 ## Status
 
-**v0.1 — early.** Usable for small projects and VSCode extensions. Not ready for production where correctness matters more than ergonomics.
+**v0.1 — early.** Usable for scripts, CLI tools, and small VSCode extensions. Not ready for production where correctness matters more than ergonomics.
 
 ### Works today
 
-- `func`, `let`, `var`, `struct`, `enum`, `switch`, `for`, `while`, `if/else`
-- **Optionals**: `T?`, `??`, `!`, `?.`, `if let`, `guard let`
+- `func`, `let`, `var`, `struct`, `enum`, `class`, `switch`, `for`, `while`, `if/else`
+- **Optionals**: `T?`, `??`, `!`, `?.`, `if let`, `guard let` (with multiple bindings and interleaved conditions)
 - **Pattern matching**: enum cases with bindings, `case 400...499`, `case 301, 302`, `where` guards
 - **String interpolation**: `"Hello, \(name)!"`
 - **Closures**: `nums.map { $0 * 2 }`, explicit params, `reduce` swap
@@ -73,15 +73,23 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 - **Modules**: `import`/`export` — ESM out of the box
 - **Structs with value semantics**: auto-frozen when all fields are `let`
 - **Enums with payloads**: `case warn(String)` → tagged unions
+- **Classes**: `class` with `extends`, `super.init(...)`, `override`, `implements` (interfaces erased)
+- **`new`**: `new Foo(args)` — binds to the first call in the postfix chain
+- **Async**: top-level `async func` and `async { ... }` closures, `await`
+- **Errors**: `throw`, `try { ... } catch (e) { ... }`
+- **Lexer**: hex/binary/octal literals, exponent notation, `_` numeric separators
 
 ### Doesn't work yet
 
-- `async` / `await` — parsed but not usable (`async func` not wired)
-- `class`, `new`, `protocol`, `extension` — recognized as keywords, not parsed
+- **Modifiers**: `private`, `public`, `internal`, `static`, `lazy` — parsed as keywords, not handled
+- `async func` **inside** a class or struct body (top-level only)
 - Type checking — **none**. Type annotations are parsed and erased. No errors on mismatches
-- `if case`, `guard case`, destructuring (`let (a, b) = ...`)
+- `if case`, `guard case` — only `switch` does pattern matching
+- Destructuring in `let` and `for` (`let (a, b) = ...`)
 - `Set<T>`, `Map<K, V>`
-- Full Swift regex-free pattern matching on structs
+- Multi-line strings (`"""..."""`), raw strings
+- Re-export (`export { x } from "./a.sws"`)
+- `export default`
 
 See [`docs/`](docs/) for the aspirational spec — including everything **not** in v1.
 
@@ -107,6 +115,12 @@ cd SwiftScript
 
 # Compile a single file to a specific path
 ./swsc build hello.sws -o dist/hello.js
+
+# Compile and run immediately (uses node under the hood)
+./swsc run hello.sws
+
+# Pass arguments to the running program
+./swsc run script.sws -- arg1 arg2
 ```
 
 Then run with `node` (ESM mode — either `.mjs` extension, or `"type": "module"` in `package.json`):
@@ -119,6 +133,7 @@ node build/main.js
 
 ```
 swsc build <path> [-o <out>]
+swsc run   <file.sws> [-- args...]
 
   <path>       file or directory (.sws)
   -o <out>     output file or directory
@@ -126,11 +141,13 @@ swsc build <path> [-o <out>]
   Without -o:
     directory → .js files written next to .sws files
     file      → <name>.js written next to source
+
+  run compiles to a temp file, spawns node, cleans up.
 ```
 
 ## VSCode extension
 
-[`vscode swiftscript extension`](editors/vscode/) — TextMate grammar for `.sws`. Syntax highlighting, bracket matching, comment toggling. No LSP yet.
+[`editors/vscode/`](editors/vscode/) — TextMate grammar for `.sws`. Syntax highlighting, bracket matching, comment toggling. No LSP yet.
 
 Install locally:
 
@@ -184,21 +201,29 @@ No type checker yet. No optimizations. The compiler takes ~2ms for a 100-line fi
 
 **Why C?** The compiler is ~3000 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
 
+**How does `switch` work?** Every case becomes a labelled block with `if`s inside; `break` inside a case becomes `break _swN`. This is the cheapest way to express Swift's exhaustive `switch` in JS without a state machine.
+
+**How does `if let` work?** Each binding becomes a temporary variable plus a null-check:
+`if let x = a, x > 0 { ... }` → `const _t1_0 = a; if (_t1_0 != null) { const x = _t1_0; if (x > 0) { ... } }`. With `else`, a `_okN` flag is set inside and checked after.
+
+**How does `guard let` work?** Shared `let _gN_i` temps, single null check via `||`, then `const x = _gN_i` after the check. `guard`'s else-branch must terminate (`return`, `throw`, `break`, `continue`) — enforced by the compiler.
+
 ## Roadmap
 
 Near-term:
 
-- `async func` / `async { ... }` closures
-- `swsc check` — compile without writing files
+- `swsc check` — compile without writing files (for CI/editor)
 - Golden-file test suite
-- `case let x where cond` — fix bindings leak (see `CODEGEN_SPEC.md`)
+- `static func` / `static let` in class
+- Visibility modifiers (`private`, `public`)
 
 Later:
 
-- `class` / `new` / `implements`
+- `async func` inside class/struct
 - Type checker
 - LSP server for VSCode (goto-def, hover, diagnostics)
 - `Set<T>`, `Map<K, V>`
+- Multi-line strings
 
 See [`docs/*.md`](docs/) for the full aspirational spec. The docs lie in the right direction — the code is what actually runs.
 
