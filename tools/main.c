@@ -173,6 +173,7 @@ static int compile_file(const char *src_path, const char *out_path, int no_runti
         sb_put(&out, "\n})();\n");
     }
     sb_put(&out, "\n");
+    sb_printf(&out, "//# sourceURL=%s\n", src_path);
 
     char dir[MAXPATH];
     snprintf(dir, sizeof(dir), "%s", out_path);
@@ -360,6 +361,7 @@ static int cmd_run(int argc, char **argv) {
         sb_put(&out, "\n})();\n");
     }
     sb_put(&out, "\n");
+    sb_printf(&out, "//# sourceURL=%s\n", src_path);
 
     char *tmp = make_tmp_js();
     if (!tmp) {
