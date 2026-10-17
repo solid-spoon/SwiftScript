@@ -36,11 +36,14 @@ class TreeNode {
   }
 }
 class SymbolNode extends TreeNode {
-  constructor(label, symbolKind, line, uri) {
+  constructor(label, symbolKind, line, uri, isBlock) {
     super(label, NodeKind.symbol);
     (this.symbolKind = symbolKind);
     (this.line = line);
     (this.uri = uri);
+    (this.isBlock = isBlock);
+    (this.depth = 0);
+    (this.children = []);
   }
 }
 class FileNode extends TreeNode {
@@ -76,26 +79,50 @@ _sw1: {
 }
 return "symbol-misc";
 }
-function extractName(text, prefix) {
-const rest = text.substring(prefix.length);
-let end = rest.length;
-const stops = [" ", "{", ":", "<"];
-for (const s of stops) { const pos = rest.indexOf(s); if (((pos >= 0) && (pos < end))) { (end = pos); } }
-return rest.substring(0, end);
+function stripComment(line) {
+const pos = line.indexOf("//");
+if ((pos >= 0)) { return line.substring(0, pos); }
+return line;
 }
-function parseSymbols(text, uri) {
+function countBraces(line, brace) {
+const parts = line.split(brace);
+return (parts.length - 1);
+}
+function parseDecl(t, originalLine, uri) {
+const rawWords = t.split(" ");
+let words = [];
+for (const w of rawWords) { if ((w.length > 0)) { words.push(w); } }
+let kind = null;
+let idx = 0;
+for (const w of words) { if ((w == "enum")) { (kind = SymbolKind.enumDecl); break; } if ((w == "struct")) { (kind = SymbolKind.structDecl); break; } if ((w == "class")) { (kind = SymbolKind.classDecl); break; } if ((w == "func")) { (kind = SymbolKind.funcDecl); break; } if (((w == "let") || (w == "var"))) { (kind = SymbolKind.letDecl); break; } if (((((((((w == "export") || (w == "private")) || (w == "public")) || (w == "internal")) || (w == "static")) || (w == "async")) || (w == "override")) || (w == "lazy"))) { (idx += 1); continue; } return null; }
+if ((kind == null)) { return null; }
+if (((idx + 1) >= words.length)) { return null; }
+let name = words[(idx + 1)];
+(name = name.split("(")[0]);
+(name = name.split("{")[0]);
+(name = name.split(":")[0]);
+(name = name.trim());
+const kindStr = words[idx];
+const label = `${String(kindStr)} ${String(name)}`;
+const k = _force(kind);
+const isBlock = ((((k == SymbolKind.enumDecl) || (k == SymbolKind.structDecl)) || (k == SymbolKind.classDecl)) || (k == SymbolKind.funcDecl));
+return new SymbolNode(label, k, originalLine, uri, isBlock);
+}
+function parseNestedSymbols(text, uri) {
 let result = [];
+let stack = [];
 const lines = text.split("\n");
-let index = 0;
-for (const line of lines) { const t = line.trim(); let kind = undefined; let prefix = ""; if (t.startsWith("enum ")) { (kind = SymbolKind.enumDecl); (prefix = "enum "); } else if (t.startsWith("struct ")) { (kind = SymbolKind.structDecl); (prefix = "struct "); } else if (t.startsWith("class ")) { (kind = SymbolKind.classDecl); (prefix = "class "); } else if (t.startsWith("func ")) { (kind = SymbolKind.funcDecl); (prefix = "func "); } else if ((t.startsWith("let ") || t.startsWith("var "))) { (kind = SymbolKind.letDecl); (prefix = (t.startsWith("let ") ? "let " : "var ")); } {
-  const _t1_0 = kind;
+let lineNo = 1;
+let currentDepth = 0;
+for (const line of lines) { const code = stripComment(line); const t = code.trim(); if ((t.length > 0)) { const opens = countBraces(t, "{"); const closes = countBraces(t, "}"); {
+  const _t1_0 = parseDecl(t, lineNo, uri);
   if (_t1_0 != null) {
-    const k = _t1_0;
-    const name = extractName(t, prefix);
-    const label = ((prefix.trim() + " ") + name);
-    result.push(new SymbolNode(label, k, (index + 1), uri));
+    const n = _t1_0;
+    while (((stack.length > 0) && (stack[(stack.length - 1)].depth >= currentDepth))) { stack.pop(); }
+    if ((stack.length > 0)) { stack[(stack.length - 1)].children.push(n); } else { result.push(n); }
+    if ((n.isBlock && (opens > closes))) { (n.depth = currentDepth); stack.push(n); }
   }
-} (index += 1); }
+} (currentDepth += (opens - closes)); } (lineNo += 1); }
 return result;
 }
 class SwiftScriptTreeProvider {
@@ -113,12 +140,14 @@ class SwiftScriptTreeProvider {
     if (this.loaded) { return; }
     const uris = (await vscode.workspace.findFiles("**/*.sws"));
     let result = [];
-    for (const uri of uris) { try { const doc = (await vscode.workspace.openTextDocument(uri)); const text = doc.getText(); const symbols = parseSymbols(text, uri); const rel = vscode.workspace.asRelativePath(uri); result.push(new FileNode(rel, uri, symbols)); } catch (e) {  } }
+    for (const uri of uris) { try { const doc = (await vscode.workspace.openTextDocument(uri)); const text = doc.getText(); const symbols = parseNestedSymbols(text, uri); const rel = vscode.workspace.asRelativePath(uri); result.push(new FileNode(rel, uri, symbols)); } catch (e) {  } }
     (this.files = result);
     return (this.loaded = true);
   }
   getTreeItem(element) {
-    const collapsible = ((element.nodeKind == NodeKind.file) ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+    let hasChildren = false;
+    if (((element.nodeKind == NodeKind.symbol) && (element.children.length > 0))) { (hasChildren = true); }
+    const collapsible = (((element.nodeKind == NodeKind.file) || hasChildren) ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     const item = new vscode.TreeItem(element.label, collapsible);
     if ((element.nodeKind == NodeKind.file)) { (item.iconPath = new vscode.ThemeIcon("file-code")); (item.contextValue = "swiftscriptFile"); (item.tooltip = element.label); } else { (item.iconPath = new vscode.ThemeIcon(iconFor(element.symbolKind))); (item.contextValue = "swiftscriptSymbol"); (item.command = ({["command"]: "swiftscriptExplorer.openSymbol", ["title"]: "Open", ["arguments"]: [element]})); }
     return item;
@@ -126,6 +155,7 @@ class SwiftScriptTreeProvider {
   async getChildren(element) {
     if ((element == null)) { (await this.load()); return this.files; }
     if ((element.nodeKind == NodeKind.file)) { return element.symbols; }
+    if (((element.nodeKind == NodeKind.symbol) && (element.children.length > 0))) { return element.children; }
     return [];
   }
 }

@@ -1,4 +1,4 @@
-// SwiftScript Explorer — TreeView with project structure
+// SwiftScript Explorer — TreeView with nested structure
 // Run: swsc build src -o out
 // Then F5 in VSCode Extension Development Host
 
@@ -31,12 +31,18 @@ class SymbolNode extends TreeNode {
     let symbolKind: SymbolKind
     let line: Int
     let uri: Any
+    let isBlock: Bool
+    var depth: Int
+    var children: [SymbolNode]
 
-    init(label: String, symbolKind: SymbolKind, line: Int, uri: Any) {
+    init(label: String, symbolKind: SymbolKind, line: Int, uri: Any, isBlock: Bool) {
         super.init(label: label, nodeKind: .symbol)
         self.symbolKind = symbolKind
         self.line = line
         self.uri = uri
+        self.isBlock = isBlock
+        self.depth = 0
+        self.children = []
     }
 }
 
@@ -62,56 +68,96 @@ func iconFor(kind: SymbolKind) -> String {
     return "symbol-misc"
 }
 
-func extractName(text: String, prefix: String) -> String {
-    let rest = text.substring(prefix.length)
-    var end = rest.length
-    let stops = [" ", "{", ":", "<"]
-    for s in stops {
-        let pos = rest.indexOf(s)
-        if pos >= 0 && pos < end {
-            end = pos
-        }
+func stripComment(line: String) -> String {
+    let pos = line.indexOf("//")
+    if pos >= 0 {
+        return line.substring(0, pos)
     }
-    return rest.substring(0, end)
+    return line
 }
 
-func parseSymbols(text: String, uri: Any) -> [SymbolNode] {
+func countBraces(line: String, brace: String) -> Int {
+    let parts = line.split(brace)
+    return parts.length - 1
+}
+
+func parseDecl(t: String, originalLine: Int, uri: Any) -> SymbolNode? {
+    let rawWords = t.split(" ")
+    var words: [String] = []
+    for w in rawWords {
+        if w.length > 0 {
+            words.push(w)
+        }
+    }
+
+    var kind: SymbolKind? = nil
+    var idx = 0
+
+    for w in words {
+        if w == "enum" { kind = .enumDecl; break }
+        if w == "struct" { kind = .structDecl; break }
+        if w == "class" { kind = .classDecl; break }
+        if w == "func" { kind = .funcDecl; break }
+        if w == "let" || w == "var" { kind = .letDecl; break }
+
+        // skip modifiers
+        if w == "export" || w == "private" || w == "public" || w == "internal" || w == "static" || w == "async" || w == "override" || w == "lazy" {
+            idx += 1
+            continue
+        }
+        return nil
+    }
+
+    if kind == nil { return nil }
+    if idx + 1 >= words.length { return nil }
+
+    var name = words[idx + 1]
+    name = name.split("(")[0]
+    name = name.split("{")[0]
+    name = name.split(":")[0]
+    name = name.trim()
+
+    let kindStr = words[idx]
+    let label = "\(kindStr) \(name)"
+    let k = kind!
+    let isBlock = (k == .enumDecl || k == .structDecl || k == .classDecl || k == .funcDecl)
+
+    return new SymbolNode(label: label, symbolKind: k, line: originalLine, uri: uri, isBlock: isBlock)
+}
+
+func parseNestedSymbols(text: String, uri: Any) -> [SymbolNode] {
     var result: [SymbolNode] = []
+    var stack: [SymbolNode] = []
     let lines = text.split("\n")
-    var index = 0
+    var lineNo = 1
+    var currentDepth = 0
+
     for line in lines {
-        let t = line.trim()
-        var kind: SymbolKind?
-        var prefix = ""
+        let code = stripComment(line: line)
+        let t = code.trim()
+        if t.length > 0 {
+            let opens = countBraces(line: t, brace: "{")
+            let closes = countBraces(line: t, brace: "}")
 
-        if t.startsWith("enum ") {
-            kind = .enumDecl
-            prefix = "enum "
-        } else if t.startsWith("struct ") {
-            kind = .structDecl
-            prefix = "struct "
-        } else if t.startsWith("class ") {
-            kind = .classDecl
-            prefix = "class "
-        } else if t.startsWith("func ") {
-            kind = .funcDecl
-            prefix = "func "
-        } else if t.startsWith("let ") || t.startsWith("var ") {
-            kind = .letDecl
-            prefix = t.startsWith("let ") ? "let " : "var "
-        }
+            if let n = parseDecl(t: t, originalLine: lineNo, uri: uri) {
+                while stack.length > 0 && stack[stack.length - 1].depth >= currentDepth {
+                    stack.pop()
+                }
+                if stack.length > 0 {
+                    stack[stack.length - 1].children.push(n)
+                } else {
+                    result.push(n)
+                }
 
-        if let k = kind {
-            let name = extractName(text: t, prefix: prefix)
-            let label = prefix.trim() + " " + name
-            result.push(new SymbolNode(
-                label: label,
-                symbolKind: k,
-                line: index + 1,
-                uri: uri
-            ))
+                if n.isBlock && opens > closes {
+                    n.depth = currentDepth
+                    stack.push(n)
+                }
+            }
+
+            currentDepth += opens - closes
         }
-        index += 1
+        lineNo += 1
     }
     return result
 }
@@ -142,7 +188,7 @@ class SwiftScriptTreeProvider implements vscode.TreeDataProvider {
             try {
                 let doc = await vscode.workspace.openTextDocument(uri)
                 let text = doc.getText()
-                let symbols = parseSymbols(text: text, uri: uri)
+                let symbols = parseNestedSymbols(text: text, uri: uri)
                 let rel = vscode.workspace.asRelativePath(uri)
                 result.push(new FileNode(label: rel, uri: uri, symbols: symbols))
             } catch e {
@@ -154,7 +200,12 @@ class SwiftScriptTreeProvider implements vscode.TreeDataProvider {
     }
 
     func getTreeItem(element: Any) -> Any {
-        let collapsible = element.nodeKind == .file
+        var hasChildren = false
+        if element.nodeKind == .symbol && element.children.length > 0 {
+            hasChildren = true
+        }
+
+        let collapsible = (element.nodeKind == .file || hasChildren)
             ? vscode.TreeItemCollapsibleState.Collapsed
             : vscode.TreeItemCollapsibleState.None
 
@@ -184,6 +235,9 @@ class SwiftScriptTreeProvider implements vscode.TreeDataProvider {
         }
         if element.nodeKind == .file {
             return element.symbols
+        }
+        if element.nodeKind == .symbol && element.children.length > 0 {
+            return element.children
         }
         return []
     }
