@@ -60,7 +60,7 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 
 ## Status
 
-**v0.1 — early.** Usable for scripts, CLI tools, and small VSCode extensions. Not ready for production where correctness matters more than ergonomics.
+**v0.1 — early.** Usable for scripts, CLI tools, and VSCode extensions. Not ready for production where correctness matters more than ergonomics.
 
 ### Works today
 
@@ -74,15 +74,15 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 - **Structs with value semantics**: auto-frozen when all fields are `let`
 - **Enums with payloads**: `case warn(String)` → tagged unions
 - **Classes**: `class` with `extends`, `super.init(...)`, `override`, `implements` (interfaces erased)
-- **`new`**: `new Foo(args)` — binds to the first call in the postfix chain
-- **Async**: top-level `async func` and `async { ... }` closures, `await`
-- **Errors**: `throw`, `try { ... } catch (e) { ... }`
+- **`new`**: Swift-style construction without explicit `new` for known classes
+- **Async**: `async func` and `async { ... }` closures at top-level **and inside classes/structs**
+- **Errors**: `throw`, `try { ... } catch (e) { ... }`, `throws` in signatures (ignored in JS)
 - **Lexer**: hex/binary/octal literals, exponent notation, `_` numeric separators
+- **Modifiers**: `private`, `public`, `internal`, `static`, `override`, `lazy` are parsed and handled (static works in classes and structs)
+- **VSCode Ecosystem**: [TextMate grammar](editors/vscode/) and a real [SwiftScript Explorer](examples/vscode-swiftscript-explorer/) extension written in SwiftScript itself.
 
 ### Doesn't work yet
 
-- **Modifiers**: `private`, `public`, `internal`, `static`, `lazy` — parsed as keywords, not handled
-- `async func` **inside** a class or struct body (top-level only)
 - Type checking — **none**. Type annotations are parsed and erased. No errors on mismatches
 - `if case`, `guard case` — only `switch` does pattern matching
 - Destructuring in `let` and `for` (`let (a, b) = ...`)
@@ -147,14 +147,16 @@ swsc run   <file.sws> [-- args...]
 
 ## VSCode extension
 
-[`editors/vscode/`](editors/vscode/) — TextMate grammar for `.sws`. Syntax highlighting, bracket matching, comment toggling. No LSP yet.
+We have two things for VSCode:
+1. **TextMate grammar** in [`editors/vscode/`](editors/vscode/) — syntax highlighting.
+2. **SwiftScript Explorer** in [`examples/vscode-swiftscript-explorer/`](examples/vscode-swiftscript-explorer/) — a fully working TreeView extension written in SwiftScript. It scans your workspace for `.sws` files and builds a nested tree of classes, structs, enums, functions, and local variables.
 
-Install locally:
-
+To try the Explorer:
 ```bash
-cd editors/vscode/
+./swsc build examples/vscode-swiftscript-explorer/src -o examples/vscode-swiftscript-explorer/out
+cd examples/vscode-swiftscript-explorer/
 code .
-# press F5 → "Extension Development Host" opens with highlighting active
+# press F5 → "Extension Development Host" opens with the SwiftScript panel
 ```
 
 ## Project layout
@@ -170,12 +172,13 @@ tools/               C source for the compiler
   util.[ch]          dynamic strings, memory helpers
   main.c             CLI, file walker, runtime prelude
 
-test/
-  example_sws/       .sws sources
-  output_js/         compiled output
+examples/
+  bank.sws           classes, inheritance, throws, optionals
+  todos/todo.sws     enums, structs, closures
+  vscode-swiftscript-explorer/  real VSCode extension written in SwiftScript
 
 editors/
-  vscode/            VSCode extension (TextMate grammar)
+  vscode/            TextMate grammar
 
 docs/                specification documents (aspirational, v2+)
 ```
@@ -199,14 +202,15 @@ No type checker yet. No optimizations. The compiler takes ~2ms for a 100-line fi
 
 **Why not TypeScript?** TS is JavaScript with types bolted on. SwiftScript is *Swift with JS as the runtime*. Different ergonomics: value semantics, pattern matching, labeled arguments, no `this`.
 
-**Why C?** The compiler is ~3000 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
+**Why C?** The compiler is ~3600 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
 
 **How does `switch` work?** Every case becomes a labelled block with `if`s inside; `break` inside a case becomes `break _swN`. This is the cheapest way to express Swift's exhaustive `switch` in JS without a state machine.
 
-**How does `if let` work?** Each binding becomes a temporary variable plus a null-check:
-`if let x = a, x > 0 { ... }` → `const _t1_0 = a; if (_t1_0 != null) { const x = _t1_0; if (x > 0) { ... } }`. With `else`, a `_okN` flag is set inside and checked after.
+**How does `if let` work?** Each binding becomes a temporary variable plus a null-check. With `else`, a `_okN` flag is set inside and checked after.
 
-**How does `guard let` work?** Shared `let _gN_i` temps, single null check via `||`, then `const x = _gN_i` after the check. `guard`'s else-branch must terminate (`return`, `throw`, `break`, `continue`) — enforced by the compiler.
+**How does `guard let` work?** Shared `_gN_i` temps, single null check via `||`, then `const x = _gN_i` after the check. `guard`'s else-branch must terminate (`return`, `throw`, `break`, `continue`) — enforced by the compiler.
+
+**How does `new` work?** Swift doesn't use `new`. SwiftScript tracks classes declared in the current module and automatically emits `new` for them. External classes (like `vscode.TreeItem`) must be called with explicit `new`.
 
 ## Roadmap
 
@@ -214,12 +218,11 @@ Near-term:
 
 - `swsc check` — compile without writing files (for CI/editor)
 - Golden-file test suite
-- `static func` / `static let` in class
-- Visibility modifiers (`private`, `public`)
+- `try?` / `try!` — concise error handling
+- Exhaustiveness checking for `switch` over enums
 
 Later:
 
-- `async func` inside class/struct
 - Type checker
 - LSP server for VSCode (goto-def, hover, diagnostics)
 - `Set<T>`, `Map<K, V>`
