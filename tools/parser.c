@@ -506,9 +506,16 @@ static Node *parse_class(P *p) {
     if (match_kw(p, "implements")) {
         n->items = list_new();
         while (1) {
-            Token *iface = expect_id(p);
-            Node *i = node_new(N_ID, iface->line, iface->col);
-            i->name = xstrdup(iface->value);
+            Token *first = expect_id(p);
+            StrBuf qname; sb_init(&qname);
+            sb_put(&qname, first->value);
+            while (match_op(p, ".")) {
+                Token *part = expect_id(p);
+                sb_putc(&qname, '.');
+                sb_put(&qname, part->value);
+            }
+            Node *i = node_new(N_ID, first->line, first->col);
+            i->name = sb_take(&qname);
             list_push(n->items, i);
             if (!match_op(p, ",")) break;
         }

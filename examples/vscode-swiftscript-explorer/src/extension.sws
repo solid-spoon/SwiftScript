@@ -1,0 +1,225 @@
+// SwiftScript Explorer — TreeView with project structure
+// Run: swsc build src -o out
+// Then F5 in VSCode Extension Development Host
+
+import * as vscode from "vscode"
+
+enum SymbolKind {
+    case enumDecl
+    case structDecl
+    case classDecl
+    case funcDecl
+    case letDecl
+}
+
+enum NodeKind {
+    case file
+    case symbol
+}
+
+class TreeNode {
+    let label: String
+    let nodeKind: NodeKind
+
+    init(label: String, nodeKind: NodeKind) {
+        self.label = label
+        self.nodeKind = nodeKind
+    }
+}
+
+class SymbolNode extends TreeNode {
+    let symbolKind: SymbolKind
+    let line: Int
+    let uri: Any
+
+    init(label: String, symbolKind: SymbolKind, line: Int, uri: Any) {
+        super.init(label: label, nodeKind: .symbol)
+        self.symbolKind = symbolKind
+        self.line = line
+        self.uri = uri
+    }
+}
+
+class FileNode extends TreeNode {
+    let uri: Any
+    let symbols: [SymbolNode]
+
+    init(label: String, uri: Any, symbols: [SymbolNode]) {
+        super.init(label: label, nodeKind: .file)
+        self.uri = uri
+        self.symbols = symbols
+    }
+}
+
+func iconFor(kind: SymbolKind) -> String {
+    switch kind {
+    case .enumDecl:   return "symbol-enum"
+    case .structDecl: return "symbol-struct"
+    case .classDecl:  return "symbol-class"
+    case .funcDecl:   return "symbol-method"
+    case .letDecl:    return "symbol-variable"
+    }
+    return "symbol-misc"
+}
+
+func extractName(text: String, prefix: String) -> String {
+    let rest = text.substring(prefix.length)
+    var end = rest.length
+    let stops = [" ", "{", ":", "<"]
+    for s in stops {
+        let pos = rest.indexOf(s)
+        if pos >= 0 && pos < end {
+            end = pos
+        }
+    }
+    return rest.substring(0, end)
+}
+
+func parseSymbols(text: String, uri: Any) -> [SymbolNode] {
+    var result: [SymbolNode] = []
+    let lines = text.split("\n")
+    var index = 0
+    for line in lines {
+        let t = line.trim()
+        var kind: SymbolKind?
+        var prefix = ""
+
+        if t.startsWith("enum ") {
+            kind = .enumDecl
+            prefix = "enum "
+        } else if t.startsWith("struct ") {
+            kind = .structDecl
+            prefix = "struct "
+        } else if t.startsWith("class ") {
+            kind = .classDecl
+            prefix = "class "
+        } else if t.startsWith("func ") {
+            kind = .funcDecl
+            prefix = "func "
+        } else if t.startsWith("let ") || t.startsWith("var ") {
+            kind = .letDecl
+            prefix = t.startsWith("let ") ? "let " : "var "
+        }
+
+        if let k = kind {
+            let name = extractName(text: t, prefix: prefix)
+            let label = prefix.trim() + " " + name
+            result.push(new SymbolNode(
+                label: label,
+                symbolKind: k,
+                line: index + 1,
+                uri: uri
+            ))
+        }
+        index += 1
+    }
+    return result
+}
+
+class SwiftScriptTreeProvider implements vscode.TreeDataProvider {
+    let _onDidChangeTreeData: Any
+    let onDidChangeTreeData: Any
+    var files: [FileNode] = []
+    var loaded: Bool = false
+
+    init() {
+        self._onDidChangeTreeData = new vscode.EventEmitter()
+        self.onDidChangeTreeData = self._onDidChangeTreeData.event
+    }
+
+    func refresh() {
+        self.loaded = false
+        self._onDidChangeTreeData.fire()
+    }
+
+    async func load() {
+        if self.loaded {
+            return
+        }
+        let uris = await vscode.workspace.findFiles("**/*.sws")
+        var result: [FileNode] = []
+        for uri in uris {
+            try {
+                let doc = await vscode.workspace.openTextDocument(uri)
+                let text = doc.getText()
+                let symbols = parseSymbols(text: text, uri: uri)
+                let rel = vscode.workspace.asRelativePath(uri)
+                result.push(new FileNode(label: rel, uri: uri, symbols: symbols))
+            } catch e {
+                // skip unreadable files
+            }
+        }
+        self.files = result
+        self.loaded = true
+    }
+
+    func getTreeItem(element: Any) -> Any {
+        let collapsible = element.nodeKind == .file
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.None
+
+        let item = new vscode.TreeItem(element.label, collapsible)
+
+        if element.nodeKind == .file {
+            item.iconPath = new vscode.ThemeIcon("file-code")
+            item.contextValue = "swiftscriptFile"
+            item.tooltip = element.label
+        } else {
+            item.iconPath = new vscode.ThemeIcon(iconFor(kind: element.symbolKind))
+            item.contextValue = "swiftscriptSymbol"
+            item.command = [
+                "command": "swiftscriptExplorer.openSymbol",
+                "title": "Open",
+                "arguments": [element]
+            ]
+        }
+
+        return item
+    }
+
+    async func getChildren(element: Any?) -> [Any] {
+        if element == nil {
+            await self.load()
+            return self.files
+        }
+        if element.nodeKind == .file {
+            return element.symbols
+        }
+        return []
+    }
+}
+
+export func activate(context: Any) {
+    let provider = new SwiftScriptTreeProvider()
+    let treeView = vscode.window.createTreeView("swiftscriptExplorer", [
+        "treeDataProvider": provider,
+        "showCollapseAll": true
+    ])
+    context.subscriptions.push(treeView)
+
+    let refreshCmd = vscode.commands.registerCommand("swiftscriptExplorer.refresh", {
+        provider.refresh()
+    })
+    context.subscriptions.push(refreshCmd)
+
+    let openCmd = vscode.commands.registerCommand("swiftscriptExplorer.openSymbol", { async node in
+        if node.nodeKind == .symbol {
+            let line = node.line - 1
+            let pos = new vscode.Position(line, 0)
+            let range = new vscode.Range(pos, pos)
+            await vscode.window.showTextDocument(node.uri, [
+                "selection": range
+            ])
+        }
+    })
+    context.subscriptions.push(openCmd)
+
+    let watcher = vscode.workspace.createFileSystemWatcher("**/*.sws")
+    watcher.onDidChange({ _ in provider.refresh() })
+    watcher.onDidCreate({ _ in provider.refresh() })
+    watcher.onDidDelete({ _ in provider.refresh() })
+    context.subscriptions.push(watcher)
+}
+
+export func deactivate() {
+}

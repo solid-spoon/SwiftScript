@@ -411,9 +411,23 @@ static char *block_returning(List *stmts, Ctx *ctx) {
         Node *s = stmts->items[i];
         int is_last = (i == stmts->count - 1);
         if (is_last && s->kind == N_EXPR_STMT) {
-            char *e = gen_expr(s->a, ctx);
-            sb_printf(&sb, "return %s;", e);
-            free(e);
+            if (s->a->kind == N_IF && !s->a->c) {
+                char *c = gen_stmt(s, ctx);
+                sb_put(&sb, c); free(c);
+                sb_put(&sb, " return null;");
+            } else if (s->a->kind == N_IF_LET && !s->a->c) {
+                char *c = gen_stmt(s, ctx);
+                sb_put(&sb, c); free(c);
+                sb_put(&sb, " return null;");
+            } else if (s->a->kind == N_SWITCH) {
+                char *c = gen_stmt(s, ctx);
+                sb_put(&sb, c); free(c);
+                sb_put(&sb, " return null;");
+            } else {
+                char *e = gen_expr(s->a, ctx);
+                sb_printf(&sb, "return %s;", e);
+                free(e);
+            }
         } else {
             char *c = gen_stmt(s, ctx);
             sb_put(&sb, c); free(c);
@@ -421,6 +435,10 @@ static char *block_returning(List *stmts, Ctx *ctx) {
         if (i < stmts->count - 1) sb_putc(&sb, ' ');
     }
     return sb_take(&sb);
+}
+
+static int is_file_specifier(const char *path) {
+    return path[0] == '.' || path[0] == '/';
 }
 
 static char *gen_import(Node *n) {
@@ -447,7 +465,8 @@ static char *gen_import(Node *n) {
     const char *path = n->name;
     size_t plen = strlen(path);
     StrBuf mod; sb_init(&mod);
-    if (plen >= 4 && strcmp(path + plen - 4, ".sws") == 0) {
+    if (is_file_specifier(path) &&
+        plen >= 4 && strcmp(path + plen - 4, ".sws") == 0) {
         sb_putn(&mod, path, plen - 4);
         sb_put(&mod, ".js");
     } else {

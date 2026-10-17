@@ -1,0 +1,34 @@
+{
+  "name": "swiftscript-explorer",
+  "displayName": "SwiftScript Explorer",
+  "description": "Tree view of SwiftScript declarations in the Explorer sidebar",
+  "version": "0.1.0",
+  "publisher": "swiftscript",
+  "engines": { "vscode": "^1.82.0" },
+  "main": "./out/extension.js",
+  "type": "module",
+  "activationEvents": ["onView:swiftscriptExplorer"],
+  "contributes": {
+    "views": {
+      "explorer": [
+        { "id": "swiftscriptExplorer", "name": "SwiftScript" }
+      ]
+    },
+    "commands": [
+      {
+        "command": "swiftscriptExplorer.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "swiftscriptExplorer.refresh",
+          "when": "view == swiftscriptExplorer",
+          "group": "navigation"
+        }
+      ]
+    }
+  }
+}
