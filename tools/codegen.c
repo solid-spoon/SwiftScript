@@ -154,6 +154,15 @@ static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
         Node *s = prog->stmts->items[i];
         if (s->name) ss_add(&ctx->globals, s->name);
+
+        if (s->kind == N_IMPORT && s->items) {
+            for (int j = 0; j < s->items->count; j++) {
+                Node *spec = s->items->items[j];
+                const char *name = spec->sval ? spec->sval : spec->name;
+                if (name) ss_add(&ctx->globals, name);
+            }
+        }
+
         if (s->kind == N_STRUCT && s->name) ss_add(&ctx->struct_names, s->name);
         if (s->kind == N_CLASS  && s->name) ss_add(&ctx->class_names, s->name);
         if (s->kind == N_ENUM && s->name && s->cases) {

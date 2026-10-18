@@ -12,6 +12,7 @@ enum DeclKind {
     case enumDecl
     case funcDecl
     case letDecl
+    case extensionDecl
 }
 
 class Decl {
@@ -92,6 +93,7 @@ func detectDecl(raw: String, lineNo: Int) -> Any {
         if w == "class" { kind = .classDecl; break }
         if w == "struct" { kind = .structDecl; break }
         if w == "enum" { kind = .enumDecl; break }
+        if w == "extension" { kind = .extensionDecl; break }
         if w == "func" { kind = .funcDecl; break }
         if w == "let" || w == "var" { kind = .letDecl; break }
         if w == "private" || w == "public" || w == "internal" ||
@@ -151,6 +153,7 @@ func kindToVscode(kind: DeclKind) -> Any {
     case .enumDecl:   return vscode.SymbolKind.Enum
     case .funcDecl:   return vscode.SymbolKind.Function
     case .letDecl:    return vscode.SymbolKind.Variable
+    case .extensionDecl: return vscode.SymbolKind.Namespace
     }
     return vscode.SymbolKind.Variable
 }
@@ -233,12 +236,14 @@ class HoverProvider {
             "struct": "Value type. Auto-frozen with `Object.freeze` if all fields are `let`.",
             "class": "Reference type. Supports `extends`, `super.init`, `override`.",
             "enum": "Tagged union. Cases may carry a payload.",
+            "extension": "Adds methods to an existing struct or class.",
             "guard": "Early exit. `else` must terminate (return / throw / break / continue).",
             "switch": "Pattern matching. Supports enum cases, ranges (`400...499`), `where`.",
             "async": "Marks a function as async (returns Promise).",
             "await": "Suspends until the Promise resolves.",
             "try": "Wraps code that may throw. Paired with `catch`.",
             "throw": "Throws an error. Caught by `try/catch`.",
+            "defer": "Guarantees execution of a block when exiting the current scope.",
             "new": "Constructs a class. Auto-added for classes declared in the same module.",
             "nil": "Null-ish. Compiles to JS `null`.",
             "self": "Current instance. `this` in classes, `_self` in structs.",
@@ -268,10 +273,10 @@ class CompletionProvider {
         self.keywords = [
             "let", "var", "func", "return", "if", "else", "for", "in",
             "while", "break", "continue", "struct", "enum", "class",
-            "import", "export", "try", "throw", "catch", "async", "await",
-            "true", "false", "nil", "self", "super", "new", "static",
-            "private", "public", "internal", "override", "lazy", "throws",
-            "guard", "implements", "extends"
+            "extension", "import", "export", "try", "throw", "catch",
+            "defer", "async", "await", "true", "false", "nil", "self",
+            "super", "new", "static", "private", "public", "internal",
+            "override", "lazy", "throws", "guard", "implements", "extends"
         ]
         self.types = ["Int", "Double", "Float", "String", "Bool", "Any", "Void"]
         self.builtins = [

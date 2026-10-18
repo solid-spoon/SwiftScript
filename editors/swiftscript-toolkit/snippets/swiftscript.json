@@ -69,6 +69,16 @@
     "body": ["async func ${1:name}(${2:args}) -> ${3:ReturnType} {", "\t${4:let value = await ${5:something}()}", "\t$0", "}"],
     "description": "Async function with await"
   },
+  "Defer": {
+    "prefix": "defer",
+    "body": ["defer {", "\t$0", "}"],
+    "description": "Defer block (runs on scope exit)"
+  },
+  "Extension": {
+    "prefix": "extension",
+    "body": ["extension ${1:Type} {", "\tfunc ${2:method}() -> ${3:Void} {", "\t\t$0", "\t}", "}"],
+    "description": "Extension block"
+  },
   "Import": {
     "prefix": "import",
     "body": ["import * as ${1:alias} from \"${2:module}\""],

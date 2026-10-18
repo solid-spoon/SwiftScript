@@ -122,6 +122,14 @@
           }
         },
         {
+          "name": "meta.extension.swiftscript",
+          "match": "\\b(extension)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.extension.swiftscript" },
+            "2": { "name": "entity.name.type.extension.swiftscript" }
+          }
+        },
+        {
           "name": "meta.enum-case.swiftscript",
           "match": "\\b(case)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
