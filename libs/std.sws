@@ -1,0 +1,111 @@
+// SwiftScript Utility Prelude
+//
+// Not Swift Foundation — a functional-style prelude.
+// sum(xs) instead of xs.reduce(0, +), uppercased(s) instead of s.uppercased().
+// Types are erased at runtime; annotations are documentation, not enforcement.
+//
+// Usage:
+//   cp libs/std.sws path/to/project/
+//   import { sum, uppercased, joined } from "./std.sws"
+
+// ===== Array =====
+
+export func sum(_ xs: [Double]) -> Double {
+    var total = 0
+    for x in xs { total += x }
+    return total
+}
+
+export func average(_ xs: [Double]) -> Double? {
+    if xs.length == 0 { return nil }
+    return sum(xs) / xs.length
+}
+
+export func first(_ xs: [Any]) -> Any? {
+    if xs.length == 0 { return nil }
+    return xs[0]
+}
+
+export func last(_ xs: [Any]) -> Any? {
+    if xs.length == 0 { return nil }
+    return xs[xs.length - 1]
+}
+
+export func uniqued(_ xs: [Any]) -> [Any] {
+    // primitives only, uses ===
+    var out: [Any] = []
+    for x in xs {
+        if !out.includes(x) { out.push(x) }
+    }
+    return out
+}
+
+export func chunked(_ xs: [Any], into size: Int) -> [[Any]] {
+    if size <= 0 { return [] }
+    var out: [[Any]] = []
+    var i = 0
+    while i < xs.length {
+        out.push(xs.slice(i, i + size))
+        i += size
+    }
+    return out
+}
+
+export func reversed(_ xs: [Any]) -> [Any] {
+    return xs.slice().reverse()
+}
+
+// ===== String =====
+
+export func uppercased(_ s: String) -> String {
+    return s.toUpperCase()
+}
+
+export func lowercased(_ s: String) -> String {
+    return s.toLowerCase()
+}
+
+export func trimmed(_ s: String) -> String {
+    return s.trim()
+}
+
+export func capitalized(_ s: String) -> String {
+    if s.length == 0 { return s }
+    return s.substring(0, 1).toUpperCase() + s.substring(1).toLowerCase()
+}
+
+export func repeated(_ s: String, count n: Int) -> String {
+    return s.repeat(n)
+}
+
+export func padLeading(_ s: String, to length: Int, with pad: String) -> String {
+    return s.padStart(length, pad)
+}
+
+export func padTrailing(_ s: String, to length: Int, with pad: String) -> String {
+    return s.padEnd(length, pad)
+}
+
+export func joined(_ xs: [Any], _ sep: String) -> String {
+    return xs.join(sep)
+}
+
+export func split(_ s: String, _ sep: String) -> [String] {
+    return s.split(sep)
+}
+
+// ===== Math =====
+
+export func pow(_ base: Double, _ exp: Double) -> Double {
+    return Math.pow(base, exp)
+}
+
+// ===== JSON =====
+
+export func decodeJSON(_ s: String) -> Any? {
+    return try? JSON.parse(s)
+}
+
+export func encodeJSON(_ x: Any) -> String? {
+    return try? JSON.stringify(x)
+}

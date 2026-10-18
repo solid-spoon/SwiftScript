@@ -406,7 +406,10 @@ static Node *parse_struct(P *p) {
             p_err(p, g->line, g->col, "Unterminated struct");
         }
         int is_static = 0, is_async = 0;
-        int mods = parse_decl_modifiers(p, &is_static, &is_async);
+        /* Return value (were any modifiers parsed?) is unused here:
+         * fields and methods both accept modifiers, and the checks
+         * below don't need to distinguish. Only the out-params matter. */
+        (void)parse_decl_modifiers(p, &is_static, &is_async);
 
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
@@ -923,6 +926,59 @@ static int is_assign_op(const char *op) {
 
 static Node *parse_unary(P *p, int no_trailing);
 
+/* Parse the \`\(expr)\` part of a template-string literal.
+ *
+ * Isolated into its own function so the setjmp/longjmp pair lives in a
+ * tiny frame rather than in parse_postfix's large one. Without this,
+ * GCC's -Wclobbered falsely flags every local in parse_postfix that
+ * happens to be alive across the interpolation code — even though no
+ * value is actually read after a longjmp return.
+ *
+ * Preconditions:
+ *   - raw != NULL, points to a NUL-terminated string
+ *   - i <= j <= strlen(raw)
+ *   - t points into p->toks->items[], and remains valid (it does: the
+ *     token list outlives the parser pass) */
+static Node *parse_interpolation(P *p, Token *t,
+                                 const char *raw, size_t i, size_t j) {
+    char *sub = xstrndup(raw + i, j - i);
+    SSError serr = {0};
+    TokenList *subtoks = tokenize(sub, &serr);
+    free(sub);
+    if (!subtoks) {
+        p_err(p, t->line, t->col, "Error in interpolation: %s", serr.msg);
+        return NULL;  /* unreachable: p_err longjmps */
+    }
+
+    /* Sub-parser is fully isolated; its jump buffer catches errors
+     * inside the interpolated expression without unwinding the outer
+     * parser. */
+    P sub_p = {0};
+    sub_p.toks = subtoks;
+    sub_p.jb_top = 1;
+
+    /* volatile because it is assigned between setjmp and longjmp. */
+    volatile Node *sub_ast = NULL;
+
+    if (setjmp(sub_p.jbs[0]) == 0) {
+        sub_ast = parse_program(&sub_p);
+    } else {
+        free_tokens(subtoks);
+        p_err(p, t->line, t->col,
+              "Error in interpolation: %s", sub_p.err_msg);
+        return NULL;  /* unreachable */
+    }
+    free_tokens(subtoks);
+
+    if (!sub_ast || sub_ast->stmts->count != 1 ||
+        ((Node*)sub_ast->stmts->items[0])->kind != N_EXPR_STMT) {
+        p_err(p, t->line, t->col,
+              "Interpolation must be an expression");
+        return NULL;  /* unreachable */
+    }
+    return ((Node*)sub_ast->stmts->items[0])->a;
+}
+
 static List *parse_args(P *p) {
     List *args = list_new();
     if (!check_op(p, ")")) {
@@ -997,29 +1053,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
                             if (depth == 0) break;
                             j++;
                         }
-                        char *sub = xstrndup(raw + i, j - i);
-                        SSError serr = {0};
-                        TokenList *subtoks = tokenize(sub, &serr);
-                        free(sub);
-                        if (!subtoks) {
-                            p_err(p, t->line, t->col, "Error in interpolation: %s", serr.msg);
-                        }
-                        P sub_p = {0};
-                        sub_p.toks = subtoks;
-                        sub_p.jb_top = 1;
-                        Node *sub_ast = NULL;
-                        if (setjmp(sub_p.jbs[0]) == 0) {
-                            sub_ast = parse_program(&sub_p);
-                        } else {
-                            free_tokens(subtoks);
-                            p_err(p, t->line, t->col, "Error in interpolation: %s", sub_p.err_msg);
-                        }
-                        free_tokens(subtoks);
-                        if (!sub_ast || sub_ast->stmts->count != 1 ||
-                            ((Node*)sub_ast->stmts->items[0])->kind != N_EXPR_STMT) {
-                            p_err(p, t->line, t->col, "Interpolation must be an expression");
-                        }
-                        Node *expr = ((Node*)sub_ast->stmts->items[0])->a;
+                        Node *expr = parse_interpolation(p, t, raw, i, j);
                         Node *pt = node_new(N_TEMPLATE_PART, t->line, t->col);
                         pt->sval = xstrdup("expr");
                         pt->a = expr;
