@@ -1,2 +1,7 @@
-swsc
+/swsc
+/swsc.exe
+/build/
 *.o
+*.d
+*.js.tmp
+core
