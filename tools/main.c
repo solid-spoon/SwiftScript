@@ -144,6 +144,24 @@ static int mkdir_p(const char *path) {
     return 0;
 }
 
+static int rmdir_p(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char full[MAXPATH];
+        snprintf(full, sizeof(full), "%s/%s", path, e->d_name);
+        struct stat st;
+        if (lstat(full, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) rmdir_p(full);
+            else remove(full);
+        }
+    }
+    closedir(d);
+    return rmdir(path);
+}
+
 static const char *path_ext(const char *p) {
     const char *dot = strrchr(p, '.');
     return dot ? dot : "";
@@ -434,49 +452,91 @@ static int run_node(char *tmpfile, int extra_argc, char **extra_argv) {
 }
 #endif
 
-/* FIX #2: two hazards fixed.
- *   (a) TOCTOU: the original checked "does it exist?" then opened for
- *       writing — a local attacker could win the race. Now: POSIX uses
- *       mkstemp (atomic, 0600, and refuses to overwrite);
- *       Windows uses _open with _O_CREAT|_O_EXCL (same guarantee).
- *   (b) Predictable names (time-only) → mkstemp supplies entropy
- *       on POSIX. Windows retains `time ^ attempt` — documented
- *       limitation for non-sticky tempdirs. */
-static char *create_tmp_file(void) {
-    const char *tmpdir = getenv("TMPDIR");
-    if (!tmpdir || !*tmpdir) tmpdir = getenv("TEMP");
-    if (!tmpdir || !*tmpdir) tmpdir = getenv("TMP");
-    if (!tmpdir || !*tmpdir) {
-#if defined(SWSC_POSIX)
-        tmpdir = "/tmp";
-#else
-        tmpdir = ".";
-#endif
+static void join_path(const char *base_file, const char *rel, char *out) {
+    char base_dir[MAXPATH];
+    snprintf(base_dir, sizeof(base_dir), "%s", base_file);
+    char *slash = strrchr(base_dir, '/');
+    if (slash) {
+        *slash = '\0';
+    } else {
+        snprintf(base_dir, sizeof(base_dir), ".");
     }
 
-#if defined(SWSC_POSIX)
-    size_t n = strlen(tmpdir) + 32;
-    char *path = xmalloc(n);
-    snprintf(path, n, "%s/swsc-XXXXXX", tmpdir);
-    int fd = mkstemp(path);           /* atomically creates, mode 0600 */
-    if (fd < 0) { free(path); return NULL; }
-    close(fd);
-    return path;
-#else
-    unsigned seed = (unsigned)time(NULL) ^ (unsigned)_getpid();
-    for (unsigned attempt = 0; attempt < 10000; attempt++) {
-        size_t n = strlen(tmpdir) + 64;
-        char *path = xmalloc(n);
-        snprintf(path, n, "%s\\swsc-%u-%u.js", tmpdir, seed, attempt);
-        int fd = _open(path,
-                       _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY,
-                       _S_IREAD | _S_IWRITE);
-        if (fd >= 0) { _close(fd); return path; }
-        free(path);
-        if (errno != EEXIST) return NULL;
+    const char *r = rel;
+    if (r[0] == '.' && r[1] == '/') r += 2;
+
+    while (r[0] == '.' && r[1] == '.' && r[2] == '/') {
+        char *last_slash = strrchr(base_dir, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+        } else {
+            if (strcmp(base_dir, ".") != 0) {
+                snprintf(base_dir, sizeof(base_dir), ".");
+            }
+        }
+        r += 3;
     }
-    return NULL;
-#endif
+
+    if (strcmp(base_dir, ".") == 0) {
+        snprintf(out, MAXPATH * 2, "%s", r);
+    } else {
+        snprintf(out, MAXPATH * 2, "%s/%s", base_dir, r);
+    }
+}
+
+static void compile_recursive(const char *src_path, const char *tmp_dir, int no_runtime, StrBuf *visited, int *has_err) {
+    if (*has_err) return;
+
+    if (visited->buf) {
+        char buf[MAXPATH + 2];
+        snprintf(buf, sizeof(buf), "\n%s\n", src_path);
+        if (strstr(visited->buf, buf)) return;
+    }
+    sb_printf(visited, "%s\n", src_path);
+
+    char *src;
+    Node *ast = parse_file(src_path, &src);
+    if (!ast) { *has_err = 1; return; }
+
+    for (int i = 0; i < ast->stmts->count; i++) {
+        Node *s = ast->stmts->items[i];
+        if (s->kind == N_IMPORT && s->name && s->name[0] == '.' && strstr(s->name, ".sws")) {
+            char dep_path[MAXPATH * 2];
+            join_path(src_path, s->name, dep_path);
+            compile_recursive(dep_path, tmp_dir, no_runtime, visited, has_err);
+        }
+    }
+
+    char *user_js = gen_program(ast);
+    if (!user_js) { *has_err = 1; return; }
+
+    StrBuf out; sb_init(&out);
+    build_output(&out, user_js, no_runtime, src_path);
+
+    char out_path[MAXPATH * 2];
+    snprintf(out_path, sizeof(out_path), "%s/%s", tmp_dir, src_path);
+    size_t len = strlen(out_path);
+    if (len >= 4 && strcmp(out_path + len - 4, ".sws") == 0) {
+        out_path[len - 3] = 'j';
+        out_path[len - 2] = 's';
+        out_path[len - 1] = '\0';
+    } else {
+        strncat(out_path, ".js", sizeof(out_path) - len - 1);
+    }
+
+    char dir[MAXPATH * 2];
+    snprintf(dir, sizeof(dir), "%s", out_path);
+    char *out_slash = strrchr(dir, '/');
+    if (out_slash) {
+        *out_slash = '\0';
+        mkdir_p(dir);
+    }
+
+    write_file(out_path, out.buf);
+    
+    sb_free(&out);
+    free(user_js);
+    free(src);
 }
 
 static int cmd_run(int argc, char **argv) {
@@ -493,8 +553,6 @@ static int cmd_run(int argc, char **argv) {
             fprintf(stderr, "swsc: unexpected argument '%s' (use -- to pass args)\n", argv[3]);
             return 2;
         }
-        /* FIX #7: was &argv[4] even when argc == 4 (out-of-bounds
-         * pointer arithmetic, formally UB). */
         if (argc > 4) {
             extra_argv = &argv[4];
             extra_argc = argc - 4;
@@ -507,42 +565,48 @@ static int cmd_run(int argc, char **argv) {
         return 2;
     }
 
-    char *src;
-    Node *ast = parse_file(src_path, &src);
-    if (!ast) return 1;
+    char tmp_dir[MAXPATH];
+#if defined(SWSC_POSIX)
+    snprintf(tmp_dir, sizeof(tmp_dir), "./.swsc-run-XXXXXX");
+    if (!mkdtemp(tmp_dir)) {
+        fprintf(stderr, "swsc: cannot create temp dir: %s\n", strerror(errno));
+        return 2;
+    }
+#else
+    unsigned seed = (unsigned)time(NULL);
+    snprintf(tmp_dir, sizeof(tmp_dir), "./.swsc-run-%u", seed);
+    if (mkdir(tmp_dir, 0755) != 0) {
+        fprintf(stderr, "swsc: cannot create temp dir\n");
+        return 2;
+    }
+#endif
 
-    char *user_js = gen_program(ast);
-    if (!user_js) {
-        fprintf(stderr, "%s:%d:%d: %s\n", src_path,
-                gen_error_line(), gen_error_col(), gen_error_msg());
-        free(src);
+    StrBuf visited; sb_init(&visited);
+    sb_put(&visited, "\n");
+    int has_err = 0;
+
+    compile_recursive(src_path, tmp_dir, 0, &visited, &has_err);
+    sb_free(&visited);
+
+    if (has_err) {
+        rmdir_p(tmp_dir);
         return 1;
     }
 
-    StrBuf out; sb_init(&out);
-    build_output(&out, user_js, 0 /* no_runtime always false for run */, src_path);
-
-    char *tmp = create_tmp_file();
-    if (!tmp) {
-        fprintf(stderr, "swsc: cannot create temp file in %s\n",
-                getenv("TMPDIR") ? getenv("TMPDIR") : "temp directory");
-        sb_free(&out); free(user_js); free(src);
-        return 2;
-    }
-    if (write_file(tmp, out.buf) != 0) {
-        fprintf(stderr, "swsc: cannot write temp %s: %s\n", tmp, strerror(errno));
-        remove(tmp); free(tmp);
-        sb_free(&out); free(user_js); free(src);
-        return 2;
+    char js_path[MAXPATH * 2];
+    snprintf(js_path, sizeof(js_path), "%s/%s", tmp_dir, src_path);
+    size_t len = strlen(js_path);
+    if (len >= 4 && strcmp(js_path + len - 4, ".sws") == 0) {
+        js_path[len - 3] = 'j';
+        js_path[len - 2] = 's';
+        js_path[len - 1] = '\0';
+    } else {
+        strncat(js_path, ".js", sizeof(js_path) - len - 1);
     }
 
-    int rc = run_node(tmp, extra_argc, extra_argv);
+    int rc = run_node(js_path, extra_argc, extra_argv);
 
-    remove(tmp);
-    free(tmp);
-    sb_free(&out);
-    free(user_js);
-    free(src);
+    rmdir_p(tmp_dir);
     return rc;
 }
 

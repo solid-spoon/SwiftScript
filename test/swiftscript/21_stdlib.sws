@@ -1,12 +1,4 @@
-func sum(_ xs: [Double]) -> Double {
-    var total = 0
-    for x in xs { total += x }
-    return total
-}
-
-func uppercased(_ s: String) -> String {
-    return s.toUpperCase()
-}
+import { sum, uppercased } from "../../libs/std.sws"
 
 let nums = [1.5, 2.5, 3.5]
 print(sum(nums))
