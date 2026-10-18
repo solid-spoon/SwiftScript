@@ -1,0 +1,532 @@
+let COLS = 10
+let ROWS = 20
+let BLOCK_SIZE = 30
+
+let COLORS = [
+    "#00f0f0", // I - Cyan
+    "#f0f000", // O - Yellow
+    "#a000f0", // T - Purple
+    "#00f000", // S - Green
+    "#f00000", // Z - Red
+    "#0000f0", // J - Blue
+    "#f0a000"  // L - Orange
+]
+
+// 0 = I, 1 = O, 2 = T, 3 = S, 4 = Z, 5 = J, 6 = L
+let SHAPES = [
+    // I
+    [
+        [[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]],
+        [[0,0,1,0], [0,0,1,0], [0,0,1,0], [0,0,1,0]],
+        [[0,0,0,0], [0,0,0,0], [1,1,1,1], [0,0,0,0]],
+        [[0,1,0,0], [0,1,0,0], [0,1,0,0], [0,1,0,0]]
+    ],
+    // O
+    [
+        [[1,1], [1,1]],
+        [[1,1], [1,1]],
+        [[1,1], [1,1]],
+        [[1,1], [1,1]]
+    ],
+    // T
+    [
+        [[0,1,0], [1,1,1], [0,0,0]],
+        [[0,1,0], [0,1,1], [0,1,0]],
+        [[0,0,0], [1,1,1], [0,1,0]],
+        [[0,1,0], [1,1,0], [0,1,0]]
+    ],
+    // S
+    [
+        [[0,1,1], [1,1,0], [0,0,0]],
+        [[0,1,0], [0,1,1], [0,0,1]],
+        [[0,0,0], [0,1,1], [1,1,0]],
+        [[1,0,0], [1,1,0], [0,1,0]]
+    ],
+    // Z
+    [
+        [[1,1,0], [0,1,1], [0,0,0]],
+        [[0,0,1], [0,1,1], [0,1,0]],
+        [[0,0,0], [1,1,0], [0,1,1]],
+        [[0,1,0], [1,1,0], [1,0,0]]
+    ],
+    // J
+    [
+        [[1,0,0], [1,1,1], [0,0,0]],
+        [[0,1,1], [0,1,0], [0,1,0]],
+        [[0,0,0], [1,1,1], [0,0,1]],
+        [[0,1,0], [0,1,0], [1,1,0]]
+    ],
+    // L
+    [
+        [[0,0,1], [1,1,1], [0,0,0]],
+        [[0,1,0], [0,1,0], [0,1,1]],
+        [[0,0,0], [1,1,1], [1,0,0]],
+        [[1,1,0], [0,1,0], [0,1,0]]
+    ]
+]
+
+class Randomizer {
+    var bag: [Int]
+    
+    init() {
+        self.bag = []
+    }
+
+    func next() -> Int {
+        if self.bag.length == 0 {
+            self.bag = [0, 1, 2, 3, 4, 5, 6]
+            // Shuffle (Fisher-Yates)
+            var i = self.bag.length - 1
+            while i > 0 {
+                let j = Int(Math.floor(Math.random() * (i + 1)))
+                let temp = self.bag[i]
+                self.bag[i] = self.bag[j]
+                self.bag[j] = temp
+                i -= 1
+            }
+        }
+        return self.bag.pop()
+    }
+}
+
+class Piece {
+    var type: Int
+    var rotation: Int
+    var x: Int
+    var y: Int
+
+    init(type: Int) {
+        self.type = type
+        self.rotation = 0
+        self.x = 3
+        self.y = 0
+    }
+
+    func getMatrix() -> [[Int]] {
+        return SHAPES[self.type][self.rotation]
+    }
+
+    func clone() -> Piece {
+        let p = new Piece(type: self.type)
+        p.rotation = self.rotation
+        p.x = self.x
+        p.y = self.y
+        return p
+    }
+}
+
+class Game {
+    let boardCtx: Any
+    let nextCtx: Any
+    let holdCtx: Any
+    let scoreEl: Any
+    let linesEl: Any
+    let levelEl: Any
+
+    var board: [[Int]]
+    var currentPiece: Piece?
+    var holdPieceType: Int?
+    var canHold: Bool
+    
+    let randomizer: Randomizer
+    var nextQueue: [Int]
+    
+    var score: Int
+    var lines: Int
+    var level: Int
+    
+    var dropCounter: Int
+    var dropInterval: Int
+    var lastTime: Int
+    var isGameOver: Bool
+    var lockDelayStart: Int
+
+    init() {
+        let boardCanvas = document.getElementById("board")
+        let nextCanvas = document.getElementById("next")
+        let holdCanvas = document.getElementById("hold")
+        
+        self.boardCtx = boardCanvas.getContext("2d")
+        self.nextCtx = nextCanvas.getContext("2d")
+        self.holdCtx = holdCanvas.getContext("2d")
+        
+        self.scoreEl = document.getElementById("score")
+        self.linesEl = document.getElementById("lines")
+        self.levelEl = document.getElementById("level")
+
+        self.board = []
+        var r = 0
+        while r < ROWS {
+            var row = []
+            var c = 0
+            while c < COLS {
+                row.push(-1)
+                c += 1
+            }
+            self.board.push(row)
+            r += 1
+        }
+
+        self.randomizer = new Randomizer()
+        self.nextQueue = []
+        self.holdPieceType = nil
+        self.canHold = true
+        self.currentPiece = nil
+        
+        self.score = 0
+        self.lines = 0
+        self.level = 1
+        self.dropCounter = 0
+        self.dropInterval = 1000
+        self.lastTime = 0
+        self.isGameOver = false
+
+        var i = 0
+        while i < 3 {
+            self.nextQueue.push(self.randomizer.next())
+            i += 1
+        }
+    }
+
+    func start() {
+        self.spawnPiece()
+        self.bindInput()
+        window.requestAnimationFrame({ time in self.update(time) })
+    }
+
+    func spawnPiece() {
+        let type = self.nextQueue.shift()
+        self.nextQueue.push(self.randomizer.next())
+        self.currentPiece = new Piece(type: type)
+        self.canHold = true
+        
+        // Game Over check
+        if self.collides(self.currentPiece!, 0, 0) {
+            self.isGameOver = true
+            print("Game Over!")
+        }
+    }
+
+    func bindInput() {
+        document.addEventListener("keydown", { event in
+            if self.isGameOver { return }
+            let key = event.key
+            
+            if key == "ArrowLeft" {
+                self.movePiece(-1, 0)
+            } else if key == "ArrowRight" {
+                self.movePiece(1, 0)
+            } else if key == "ArrowDown" {
+                self.movePiece(0, 1)
+                self.dropCounter = 0
+                self.score += 1
+            } else if key == "ArrowUp" || key == "x" {
+                self.rotatePiece(1) // CW
+            } else if key == "z" {
+                self.rotatePiece(-1) // CCW
+            } else if key == " " {
+                self.hardDrop()
+            } else if key == "c" || key == "Shift" {
+                self.hold()
+            }
+        })
+    }
+
+    func movePiece(dx: Int, dy: Int) -> Bool {
+        if self.currentPiece == nil { return false }
+        if !self.collides(self.currentPiece!, dx, dy) {
+            self.currentPiece!.x += dx
+            self.currentPiece!.y += dy
+            if dx != 0 {
+                self.lockDelayStart = self.lastTime
+            }
+            return true
+        }
+        return false
+    }
+
+    func rotatePiece(dir: Int) {
+        if self.currentPiece == nil { return }
+        let p = self.currentPiece!
+        let prevRot = p.rotation
+        p.rotation = (p.rotation + dir + 4) % 4
+
+        let kicks = [0, -1, 1, -2, 2]
+        var kicked = false
+        
+        for kick in kicks {
+            if !self.collides(p, kick, 0) {
+                p.x += kick
+                kicked = true
+                break
+            }
+        }
+        
+        if !kicked {
+            p.rotation = prevRot
+        }
+    }
+
+    func hardDrop() {
+        if self.currentPiece == nil { return }
+        var dropDist = 0
+        while !self.collides(self.currentPiece!, 0, 1) {
+            self.currentPiece!.y += 1
+            dropDist += 1
+        }
+        self.score += dropDist * 2
+        self.lockPiece()
+    }
+
+    func hold() {
+        if self.currentPiece == nil || !self.canHold { return }
+        
+        let currentType = self.currentPiece!.type
+        
+        if self.holdPieceType == nil {
+            self.holdPieceType = currentType
+            self.spawnPiece()
+        } else {
+            let holdType = self.holdPieceType!
+            self.holdPieceType = currentType
+            self.currentPiece = new Piece(type: holdType)
+        }
+        self.canHold = false
+    }
+
+    func lockPiece() {
+        if self.currentPiece == nil { return }
+        let p = self.currentPiece!
+        let matrix = p.getMatrix()
+        
+        var r = 0
+        while r < matrix.length {
+            var c = 0
+            while c < matrix[r].length {
+                if matrix[r][c] != 0 {
+                    let boardY = p.y + r
+                    let boardX = p.x + c
+                    if boardY >= 0 && boardY < ROWS && boardX >= 0 && boardX < COLS {
+                        self.board[boardY][boardX] = p.type
+                    }
+                }
+                c += 1
+            }
+            r += 1
+        }
+        
+        self.clearLines()
+        self.spawnPiece()
+    }
+
+    func clearLines() {
+        var linesCleared = 0
+        var y = ROWS - 1
+        while y >= 0 {
+            var isFull = true
+            var x = 0
+            while x < COLS {
+                if self.board[y][x] == -1 {
+                    isFull = false
+                    break
+                }
+                x += 1
+            }
+            
+            if isFull {
+                self.board.splice(y, 1)
+                var newRow = []
+                var c = 0
+                while c < COLS {
+                    newRow.push(-1)
+                    c += 1
+                }
+                self.board.unshift(newRow)
+                linesCleared += 1
+                y += 1
+            }
+            y -= 1
+        }
+        
+        if linesCleared > 0 {
+            self.lines += linesCleared
+            let points = [0, 100, 300, 500, 800]
+            self.score += points[linesCleared] * self.level
+            self.level = Math.floor(self.lines / 10) + 1
+            self.dropInterval = Math.max(100, 1000 - (self.level - 1) * 100)
+        }
+    }
+
+    func collides(p: Piece, dx: Int, dy: Int) -> Bool {
+        let matrix = p.getMatrix()
+        var r = 0
+        while r < matrix.length {
+            var c = 0
+            while c < matrix[r].length {
+                if matrix[r][c] != 0 {
+                    let boardY = p.y + r + dy
+                    let boardX = p.x + c + dx
+                    
+                    if boardX < 0 || boardX >= COLS || boardY >= ROWS {
+                        return true
+                    }
+                    if boardY >= 0 && self.board[boardY][boardX] != -1 {
+                        return true
+                    }
+                }
+                c += 1
+            }
+            r += 1
+        }
+        return false
+    }
+
+    func update(time: Int) {
+        if self.isGameOver { return }
+        
+        let deltaTime = time - self.lastTime
+        self.lastTime = time
+        
+        if self.currentPiece != nil {
+            self.dropCounter += deltaTime
+            if self.dropCounter > self.dropInterval {
+                if !self.movePiece(0, 1) {
+                    if self.lockDelayStart == 0 {
+                        self.lockDelayStart = time
+                    }
+                    if time - self.lockDelayStart > 500 {
+                        self.lockPiece()
+                        self.lockDelayStart = 0
+                        self.dropCounter = 0
+                    }
+                } else {
+                    self.lockDelayStart = 0
+                    self.dropCounter = 0
+                }
+            }
+        }
+        
+        self.draw()
+        window.requestAnimationFrame({ t in self.update(t) })
+    }
+
+    func drawBlock(ctx: Any, x: Int, y: Int, color: String, alpha: Int) {
+        ctx.globalAlpha = alpha / 100
+        ctx.fillStyle = color
+        ctx.fillRect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE - 1, BLOCK_SIZE - 1)
+        ctx.globalAlpha = 1
+    }
+
+    func draw() {
+        self.boardCtx.fillStyle = "#000"
+        self.boardCtx.fillRect(0, 0, COLS * BLOCK_SIZE, ROWS * BLOCK_SIZE)
+
+        self.boardCtx.strokeStyle = "#222"
+        var i = 0
+        while i <= COLS {
+            self.boardCtx.beginPath()
+            self.boardCtx.moveTo(i * BLOCK_SIZE, 0)
+            self.boardCtx.lineTo(i * BLOCK_SIZE, ROWS * BLOCK_SIZE)
+            self.boardCtx.stroke()
+            i += 1
+        }
+        i = 0
+        while i <= ROWS {
+            self.boardCtx.beginPath()
+            self.boardCtx.moveTo(0, i * BLOCK_SIZE)
+            self.boardCtx.lineTo(COLS * BLOCK_SIZE, i * BLOCK_SIZE)
+            self.boardCtx.stroke()
+            i += 1
+        }
+
+        var r = 0
+        var c = 0
+        while r < ROWS {
+            c = 0
+            while c < COLS {
+                if self.board[r][c] != -1 {
+                    self.drawBlock(self.boardCtx, c, r, COLORS[self.board[r][c]], 100)
+                }
+                c += 1
+            }
+            r += 1
+        }
+
+        if self.currentPiece != nil {
+            let p = self.currentPiece!
+            let pieceMatrix = p.getMatrix()
+            let pieceColor = COLORS[p.type]
+
+            var ghostY = p.y
+            while !self.collides(p, 0, ghostY - p.y + 1) {
+                ghostY += 1
+            }
+            
+            r = 0
+            while r < pieceMatrix.length {
+                c = 0
+                while c < pieceMatrix[r].length {
+                    if pieceMatrix[r][c] != 0 {
+                        if ghostY + r != p.y + r {
+                            self.drawBlock(self.boardCtx, p.x + c, ghostY + r, pieceColor, 20)
+                        }
+                        self.drawBlock(self.boardCtx, p.x + c, p.y + r, pieceColor, 100)
+                    }
+                    c += 1
+                }
+                r += 1
+            }
+        }
+
+        self.holdCtx.clearRect(0, 0, 120, 120)
+        if self.holdPieceType != nil {
+            let holdType = self.holdPieceType!
+            let holdMatrix = SHAPES[holdType][0]
+            let holdOffsetX = (4 - holdMatrix[0].length) / 2
+            let holdOffsetY = (4 - holdMatrix.length) / 2
+            
+            r = 0
+            while r < holdMatrix.length {
+                c = 0
+                while c < holdMatrix[r].length {
+                    if holdMatrix[r][c] != 0 {
+                        self.holdCtx.fillStyle = COLORS[holdType]
+                        self.holdCtx.fillRect((c + holdOffsetX) * 30, (r + holdOffsetY) * 30, 29, 29)
+                    }
+                    c += 1
+                }
+                r += 1
+            }
+        }
+
+        self.nextCtx.clearRect(0, 0, 120, 360)
+        var q = 0
+        while q < self.nextQueue.length {
+            let nextType = self.nextQueue[q]
+            let nextMatrix = SHAPES[nextType][0]
+            let nextOffsetX = (4 - nextMatrix[0].length) / 2
+            let nextOffsetY = q * 4 + (4 - nextMatrix.length) / 2
+            
+            r = 0
+            while r < nextMatrix.length {
+                c = 0
+                while c < nextMatrix[r].length {
+                    if nextMatrix[r][c] != 0 {
+                        self.nextCtx.fillStyle = COLORS[nextType]
+                        self.nextCtx.fillRect((c + nextOffsetX) * 30, (r + nextOffsetY) * 30, 29, 29)
+                    }
+                    c += 1
+                }
+                r += 1
+            }
+            q += 1
+        }
+
+        self.scoreEl.innerText = String(self.score)
+        self.linesEl.innerText = String(self.lines)
+        self.levelEl.innerText = String(self.level)
+    }
+}
+
+let game = new Game()
+game.start()

@@ -60,40 +60,35 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 
 ## Status
 
-**v0.2 — stable core.** Usable for scripts, CLI tools, and VSCode extensions. The compiler core has passed a full security audit (no RCE, no memory unsafety) and is covered by 24 golden tests.
+**v0.3 — polished core.** Usable for scripts, CLI tools, games, and VSCode extensions. The compiler core has passed a full security audit (no RCE, no memory unsafety) and is covered by 27 golden tests.
 
 ### Works today
 
 - `func`, `let`, `var`, `struct`, `enum`, `class`, `switch`, `for`, `while`, `if/else`
-- **Optionals**: `T?`, `T!`, `??`, `!`, `?.`, `if let`, `guard let` (with multiple bindings and interleaved conditions)
-- **Pattern matching**: enum cases with bindings, `case 400...499`, `case 301, 302`, `where` guards
+- **Optionals**: `T?`, `T!`, `??`, `!`, `?.`, `if let`, `guard let`
+- **Pattern matching**: enum cases with bindings, ranges, `where` guards, exhaustiveness checking
 - **String interpolation**: `"Hello, \(name)!"`
 - **Closures**: `nums.map { $0 * 2 }`, explicit params, `reduce` swap
-- **Ranges**: `0..<5`, `0...5` (eager arrays)
-- **Modules**: `import`/`export` — ESM out of the box
-- **Structs with value semantics**: auto-frozen when all fields are `let`
-- **Enums with payloads**: `case warn(String)` → tagged unions
-- **Classes**: `class` with `extends`, `super.init(...)`, `override`, `implements` (interfaces erased)
-- **`new`**: Swift-style construction without explicit `new` for known classes
-- **Async**: `async func` and `async { ... }` closures at top-level **and inside classes/structs**
-- **Errors**: `throw`, `try { ... } catch (e) { ... }`, `try?`, `try!`, `throws` in signatures (ignored in JS)
-- **Lexer**: hex/binary/octal literals, exponent notation, `_` numeric separators
-- **Modifiers**: `private`, `public`, `internal`, `static`, `override`, `lazy` are parsed and handled (static works in classes and structs)
-- **`swsc check`**: Compile without writing files (for CI and editor integration)
-- **Exhaustiveness checking**: `switch` over a known enum without a `default` case is verified at compile time.
-- **VSCode Ecosystem**: A fully-featured [SwiftScript Toolkit](editors/swiftscript-toolkit/) extension (syntax, snippets, outline, folding, hover) written in SwiftScript itself.
+- **Structs & Classes**: `extends`, `super.init`, `override`, `implements` (erased), auto-frozen structs
+- **Computed Properties**: `var area: Double { return ... }` (compiles to `get` for classes, `Object.defineProperty` for structs)
+- **Extensions**: `extension Foo { ... }` (merges methods at compile time)
+- **Defer**: `defer { ... }` statements (compiles to `try/finally`)
+- **Destructuring**: `let (a, b) = ...` and `for (k, v) in ...`
+- **Block Scoping**: strict block-level variable lifetimes (like modern JS `let`/`const`)
+- **Source Maps**: Debug runtime errors and set breakpoints directly in `.sws` files via Chrome DevTools / Node.js.
+- **Smart Diagnostics**: Rust-style compiler errors with caret `^` pointing to the exact column.
+- **Modules**: `import`/`export` — ESM out of the box.
+- **VSCode Ecosystem**: A fully-featured [SwiftScript Toolkit](editors/swiftscript-toolkit/) extension (syntax, snippets, outline, folding, hover, diagnostics) written in SwiftScript itself.
 
 ### Doesn't work yet
 
 - Type checking — **none**. Type annotations are parsed and erased. No errors on mismatches.
-- `protocol`, `extension`, `defer` — these will explicitly fail with a friendly "not yet implemented" error.
+- `protocol` definitions — explicitly fails with a friendly "not yet implemented" error.
 - `if case`, `guard case` — only `switch` does pattern matching.
-- Destructuring in `let` and `for` (`let (a, b) = ...`).
 - `Set<T>`, `Map<K, V>`.
 - Multi-line strings (`"""..."""`), raw strings.
-- Re-export (`export { x } from "./a.sws"`), `export default`.
 
-See [`docs/`](docs/) for the aspirational spec — including everything **not** in v0.2.
+See [`docs/`](docs/) for the aspirational spec.
 
 ## Install & Build
 
@@ -106,7 +101,7 @@ cd SwiftScript
 # Standard strict build (hardened, -Werror)
 ./build.sh
 
-# Run tests (builds + runs 24 golden tests)
+# Run tests (builds + runs 27 golden tests)
 ./test/run.sh
 
 # Debug build with ASAN and UBSAN
@@ -124,24 +119,17 @@ The build script is a Rust-strict driver: warnings are errors, and release build
 # Compile a single file — output goes next to the source
 ./swsc build hello.sws
 
-# Compile a single file to a specific path
-./swsc build hello.sws -o dist/hello.js
-
-# Check syntax and types without writing files
+# Check syntax without writing files (for CI and editor integration)
 ./swsc check src/
 
-# Compile and run immediately (uses node under the hood)
+# Compile and run immediately
 ./swsc run hello.sws
 
 # Pass arguments to the running program
 ./swsc run script.sws -- arg1 arg2
 ```
 
-Then run with `node` (ESM mode — either `.mjs` extension, or `"type": "module"` in `package.json`):
-
-```bash
-node build/main.js
-```
+Then run with `node --enable-source-maps` (ESM mode) or include the `.js` in your HTML via `<script type="module">`.
 
 ### CLI
 
@@ -152,13 +140,6 @@ swsc run   <file.sws> [-- args...]
 
   <path>       file or directory (.sws)
   -o <out>     output file or directory
-
-  Without -o:
-    directory → .js files written next to .sws files
-    file      → <name>.js written next to source
-
-  build / run compile to JS and optionally execute.
-  check performs full parsing and codegen but writes nothing.
 ```
 
 ## VSCode extension
@@ -166,9 +147,9 @@ swsc run   <file.sws> [-- args...]
 The official VSCode extension is **[`editors/swiftscript-toolkit/`](editors/swiftscript-toolkit/)**. It is written entirely in SwiftScript and includes:
 
 1. **TextMate grammar** for syntax highlighting.
-2. **Snippets** for `func`, `class`, `iflet`, `vscmd`, etc.
-3. **Language features (LSP-lite)**: Outline (`Ctrl+Shift+O`), Folding (`Ctrl+Shift+[`), Hover descriptions, and basic Completion.
-4. **Diagnostics**: Hooks into `swsc check` to underline syntax and semantic errors in real-time.
+2. **Snippets** for `func`, `class`, `iflet`, `defer`, `extension`, `vscmd`, etc.
+3. **Language features (LSP-lite)**: Outline, Folding, Hover descriptions, and Completion.
+4. **Diagnostics**: Hooks into `swsc check` to underline syntax errors in real-time.
 
 To build and run the extension locally:
 ```bash
@@ -177,8 +158,6 @@ cd editors/swiftscript-toolkit/
 code .
 # press F5 → "Extension Development Host" opens with the SwiftScript panel
 ```
-
-*(Note: [`examples/vscode-swiftscript-explorer/`](examples/vscode-swiftscript-explorer/) is a separate, smaller example extension that demonstrates how to build a custom TreeView in SwiftScript).*
 
 ## Project layout
 
@@ -189,9 +168,10 @@ tools/               C source for the compiler
   lexer.c            tokenizer
   parser.c           recursive descent → AST (with DoS protection)
   codegen.c          AST → JavaScript
+  sourcemap.c        Source Map V3 generation (Base64 VLQ)
   ast.[ch]           AST node types
   util.[ch]          dynamic strings, memory helpers
-  main.c             CLI, file walker, runtime prelude
+  main.c             CLI, file walker, smart diagnostics, runtime prelude
 
 test/
   run.sh             Golden test runner (positive and negative)
@@ -199,52 +179,37 @@ test/
   swiftscript/       Test cases (incl. neg/ for expected failures)
 
 editors/
-  swiftscript-toolkit/    The official VSCode extension (grammar, snippets, LSP-lite)
+  swiftscript-toolkit/    The official VSCode extension
 
 examples/
   bank.sws           classes, inheritance, throws, optionals
   todos/todo.sws     enums, structs, closures
+  tetris/            A Tetris clone using HTML5 Canvas
   vscode-swiftscript-explorer/  example custom TreeView extension
-
-docs/                specification documents (aspirational, v2+)
 ```
-
-## How it compiles
-
-Four stages, no shared state:
-
-1. **Lex** — text → tokens (`lexer.c`)
-2. **Parse** — tokens → AST (`parser.c`)
-3. **Emit** — AST → JS string (`codegen.c`)
-4. **Wrap** — prepend runtime; wrap non-module code in IIFE
-
-No type checker yet. No optimizations. The compiler takes ~2ms for a 100-line file.
 
 ## Design choices
 
 **Tabs vs spaces?** Tabs, 4 spaces wide, for the source. Output JS is unformatted — pipe it through `prettier` if you care.
 
-**Runtime in every file?** Yes. ~1.5 KB of `print`, `String`, `_force`, `_range` prepended to every output file. For 10-file projects that's 15 KB of duplication; a bundler (rollup, esbuild) deduplicates in 10 ms.
+**Runtime in every file?** Yes. ~1.5 KB of `print`, `String`, `_force`, `_range` prepended to every output file. A bundler deduplicates in 10 ms.
 
-**Why not TypeScript?** TS is JavaScript with types bolted on. SwiftScript is *Swift with JS as the runtime*. Different ergonomics: value semantics, pattern matching, labeled arguments, no `this`.
+**How do Source Maps work?** `swsc` tracks the original line/col of every AST statement and uses Base64 VLQ encoding to generate standard `.js.map` files. Node.js (`--enable-source-maps`) and Chrome DevTools will natively map your generated JS back to your `.sws` source.
 
-**Why C?** The compiler is ~4000 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
+**How does `extension` work?** The parser collects all `extension Type {}` blocks. Before codegen, a pass merges these methods directly into the original `struct` or `class` AST node.
 
-**How does `switch` work?** Every case becomes a labelled block with `if`s inside; `break` inside a case becomes `break _swN`. This is the cheapest way to express Swift's exhaustive `switch` in JS without a state machine.
+**How does `defer` work?** `defer` blocks are extracted and the remaining statements are wrapped in a standard JS `try { ... } finally { ... }` block, ensuring execution on `return` or `throw`.
 
-**How does `if let` work?** Each binding becomes a temporary variable plus a null-check. With `else`, a `_okN` flag is set inside and checked after.
+**How do Computed Properties work?** In classes, they become native `get` accessors. In structs, they are defined via `Object.defineProperty(_self, ..., { get: ... })` *before* calling `Object.freeze(_self)`.
 
-**How does `guard let` work?** Shared `_gN_i` temps, single null check via `||`, then `const x = _gN_i` after the check. `guard`'s else-branch must terminate (`return`, `throw`, `break`, `continue`) — enforced by the compiler.
-
-**How does `new` work?** Swift doesn't use `new`. SwiftScript tracks classes declared in the current module and automatically emits `new` for them. External classes (like `vscode.TreeItem`) must be called with explicit `new`.
+**Why C?** The compiler is ~4500 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
 
 ## Roadmap
 
 Near-term:
 
-- `extension` blocks (`extension Foo { ... }`)
-- `defer` statements
-- Source Maps (`.js.map` support for debugging `.sws` directly in Node/VSCode)
+- `if case` / `guard case` (pattern matching outside of `switch`)
+- `protocol` definitions
 - Multi-line strings (`"""..."""`)
 
 Later:
@@ -252,7 +217,6 @@ Later:
 - Type checker
 - Full LSP server (goto-def, rename, semantic tokens)
 - `Set<T>`, `Map<K, V>`
-- `protocol` definitions
 
 See [`docs/*.md`](docs/) for the full aspirational spec. The docs lie in the right direction — the code is what actually runs.
 
@@ -260,9 +224,7 @@ See [`docs/*.md`](docs/) for the full aspirational spec. The docs lie in the rig
 
 Small bugs are worth reporting in the issue tracker. Larger changes — open a discussion first, the language is still finding its shape.
 
-The compiler is deliberately boring: no AST visitors, no passes, no error recovery. Read `parser.c` top to bottom in 15 minutes. Same for `codegen.c`.
-
-Because `swsc` compiles itself as a test (the VSCode extension), any change must pass `./test/run.sh`.
+Because `swsc` compiles itself as a test (the VSCode extension and the Tetris game), any change must pass `./test/run.sh`.
 
 ## License
 

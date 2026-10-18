@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SwiftScript Tetris</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="side-panel">
+            <h2>HOLD</h2>
+            <canvas id="hold" width="120" height="120"></canvas>
+        </div>
+        
+        <canvas id="board" width="300" height="600"></canvas>
+        
+        <div class="side-panel">
+            <h2>NEXT</h2>
+            <canvas id="next" width="120" height="360"></canvas>
+            <div class="stats">
+                <p>Score: <span id="score">0</span></p>
+                <p>Lines: <span id="lines">0</span></p>
+                <p>Level: <span id="level">1</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="out/main.js"></script>
+</body>
+</html>
