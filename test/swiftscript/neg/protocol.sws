@@ -1,2 +1,2 @@
-// EXPECT_ERROR: 'protocol' is not yet implemented
-protocol Foo { }
+// EXPECT_ERROR: Cannot find protocol 'Foo' in scope
+class Bar implements Foo { }

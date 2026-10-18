@@ -183,6 +183,7 @@ static Node *parse_throw(P *p);
 static Node *parse_class(P *p);
 static Node *parse_init(P *p);
 static Node *parse_block(P *p);
+static Node *parse_protocol(P *p);
 
 /* ---------- depth-guarded wrappers ---------- */
 
@@ -377,6 +378,8 @@ static Node *parse_export(P *p) {
         decl = parse_enum(p);
     } else if (check_kw(p, "class")) {
         decl = parse_class(p);
+    } else if (check_kw(p, "protocol")) {
+        decl = parse_protocol(p);
     } else {
         Token *g = peek(p, 0);
         p_err(p, g->line, g->col,
@@ -547,6 +550,25 @@ static Node *parse_struct(P *p) {
     n->name = xstrdup(id->value);
     n->fields = list_new();
     n->methods = list_new();
+
+    if (match_kw(p, "implements")) {
+        n->items = list_new();
+        while (1) {
+            Token *first = expect_id(p);
+            StrBuf qname; sb_init(&qname);
+            sb_put(&qname, first->value);
+            while (match_op(p, ".")) {
+                Token *part = expect_id(p);
+                sb_putc(&qname, '.');
+                sb_put(&qname, part->value);
+            }
+            Node *i = node_new(N_ID, first->line, first->col);
+            i->name = sb_take(&qname);
+            list_push(n->items, i);
+            if (!match_op(p, ",")) break;
+        }
+    }
+
     expect_op(p, "{");
     while (!check_op(p, "}")) {
         if (check_eof(p)) {
@@ -1044,6 +1066,58 @@ static Node *parse_defer(P *p) {
     return n;
 }
 
+static Node *parse_protocol(P *p) {
+    Token *kw = expect_kw(p, "protocol");
+    Token *id = expect_id(p);
+    Node *n = node_new(N_PROTOCOL, kw->line, kw->col);
+    n->name = xstrdup(id->value);
+    n->methods = list_new();
+    n->fields = list_new();
+
+    expect_op(p, "{");
+    while (!check_op(p, "}")) {
+        if (check_eof(p)) { Token *g = peek(p,0); p_err(p,g->line,g->col,"Unterminated protocol"); }
+        
+        int is_static = 0, is_async = 0;
+        (void)parse_decl_modifiers(p, &is_static, &is_async);
+
+        if (check_kw(p, "func")) {
+            Token *fkw = expect_kw(p, "func");
+            Token *fid = expect_id(p);
+            Node *m = node_new(N_FUNC, fkw->line, fkw->col);
+            m->name = xstrdup(fid->value);
+            m->params = list_new();
+            expect_op(p, "(");
+            parse_params_into(p, m->params, fkw->line, fkw->col);
+            expect_op(p, ")");
+            match_kw(p, "throws");
+            if (match_op(p, "->")) m->retType = parse_type(p);
+            match_op(p, ";");
+            list_push(n->methods, m);
+        } else if (check_kw(p, "var") || check_kw(p, "let")) {
+            Token *fkw = next_tok(p);
+            Token *fid = expect_id(p);
+            expect_op(p, ":");
+            Node *fld = node_new(N_FIELD, fkw->line, fkw->col);
+            fld->sval = xstrdup(fkw->value);
+            fld->name = xstrdup(fid->value);
+            fld->type = parse_type(p);
+            
+            if (match_op(p, "{")) {
+                while (!check_op(p, "}") && !check_eof(p)) next_tok(p);
+                expect_op(p, "}");
+            }
+            match_op(p, ";");
+            list_push(n->fields, fld);
+        } else {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col, "In protocol expected func or var, got '%s'", g->value ? g->value : "<eof>");
+        }
+    }
+    expect_op(p, "}");
+    return n;
+}
+
 static Node *parse_stmt_body(P *p) {
     if (check_kw(p, "import")) return parse_import(p);
     if (check_kw(p, "export")) return parse_export(p);
@@ -1051,12 +1125,7 @@ static Node *parse_stmt_body(P *p) {
     /* FIX (UX): keywords present in lexer's KEYWORDS[] but not
      * implemented here used to produce a generic "Unexpected token".
      * Give explicit, actionable errors instead. */
-    if (check_kw(p, "protocol")) {
-        Token *t = peek(p, 0);
-        p_err(p, t->line, t->col,
-              "'protocol' is not yet implemented in swsc; "
-              "use a class with `implements` for now");
-    }
+    if (check_kw(p, "protocol")) return parse_protocol(p);
     if (check_kw(p, "extension")) return parse_extension(p);
     if (check_kw(p, "defer")) return parse_defer(p);
 

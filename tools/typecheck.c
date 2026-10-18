@@ -29,6 +29,14 @@ typedef struct Scope {
     struct Scope *parent;
 } Scope;
 
+typedef struct ProtocolDef ProtocolDef;
+struct ProtocolDef {
+    const char *name;
+    Node *node;
+    ProtocolDef *next;
+};
+static ProtocolDef *_protocols = NULL;
+
 typedef struct {
     int has_err;
     int line, col;
@@ -101,6 +109,21 @@ static Type *scope_find(Scope *s, const char *name) {
     return NULL;
 }
 
+static void register_protocol(const char *name, Node *node) {
+    ProtocolDef *p = xmalloc(sizeof(ProtocolDef));
+    p->name = name;
+    p->node = node;
+    p->next = _protocols;
+    _protocols = p;
+}
+
+static Node *find_protocol(const char *name) {
+    for (ProtocolDef *p = _protocols; p; p = p->next) {
+        if (strcmp(p->name, name) == 0) return p->node;
+    }
+    return NULL;
+}
+
 static Type *resolve_type(Node *n) {
     if (!n) return &ty_unknown;
     switch (n->kind) {
@@ -139,9 +162,7 @@ static Type *check_expr(Node *n, Scope *scope);
 static Type *check_call(Node *n, Scope *scope) {
     if (n->a->kind == N_ID) {
         Type *t = scope_find(scope, n->a->name);
-        if (t && t->kind == TY_NAMED) {
-            return t;
-        }
+        if (t && t->kind == TY_NAMED) return t;
     }
     return &ty_any;
 }
@@ -209,9 +230,7 @@ static void check_stmt(Node *n, Scope *scope) {
                 scope_add(scope, name, &ty_any);
             }
         } else {
-            if (n->name) {
-                scope_add(scope, n->name, declared);
-            }
+            if (n->name) scope_add(scope, n->name, declared);
         }
         break;
     }
@@ -279,17 +298,84 @@ static void check_stmt(Node *n, Scope *scope) {
     case N_BLOCK:
         check_block(n->stmts, scope_new(scope));
         break;
+    case N_CLASS:
+    case N_STRUCT: {
+        if (n->items && n->items->count > 0) {
+            for (int i = 0; i < n->items->count; i++) {
+                Node *proto_ref = n->items->items[i];
+                Node *proto_node = find_protocol(proto_ref->name);
+                if (!proto_node) {
+                    tc_error(n->line, n->col, "Cannot find protocol '%s' in scope", proto_ref->name);
+                    continue;
+                }
+                
+                for (int j = 0; j < proto_node->methods->count; j++) {
+                    Node *req = proto_node->methods->items[j];
+                    int found = 0;
+                    for (int k = 0; k < n->methods->count; k++) {
+                        Node *impl = n->methods->items[k];
+                        if (strcmp(req->name, impl->name) == 0) {
+                            Type *req_ret = resolve_type(req->retType);
+                            Type *impl_ret = resolve_type(impl->retType);
+                            if (!is_assignable(req_ret, impl_ret)) {
+                                tc_error(impl->line, impl->col, "Method '%s' return type does not match protocol '%s'", impl->name, proto_ref->name);
+                            }
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        tc_error(n->line, n->col, "Type '%s' does not conform to protocol '%s' (missing method '%s')", 
+                                 n->name, proto_ref->name, req->name);
+                    }
+                }
+
+                for (int j = 0; j < proto_node->fields->count; j++) {
+                    Node *req = proto_node->fields->items[j];
+                    int found = 0;
+                    for (int k = 0; k < n->fields->count; k++) {
+                        Node *impl = n->fields->items[k];
+                        if (strcmp(req->name, impl->name) == 0) {
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        tc_error(n->line, n->col, "Type '%s' does not conform to protocol '%s' (missing property '%s')", 
+                                 n->name, proto_ref->name, req->name);
+                    }
+                }
+            }
+        }
+        
+        Scope *class_scope = scope_new(scope);
+        for (int i = 0; i < n->fields->count; i++) {
+            Node *fld = n->fields->items[i];
+            scope_add(class_scope, fld->name, resolve_type(fld->type));
+        }
+        for (int i = 0; i < n->methods->count; i++) {
+            Node *m = n->methods->items[i];
+            scope_add(class_scope, m->name, resolve_type(m->retType));
+            check_stmt(m, class_scope);
+        }
+        break;
+    }
     default: break;
     }
 }
 
 int typecheck_program(Node *prog) {
     memset(&_tc, 0, sizeof(_tc));
+    _protocols = NULL;
+
     Scope *global = scope_new(NULL);
 
     for (int i = 0; i < prog->stmts->count; i++) {
         Node *s = prog->stmts->items[i];
-        if (s->kind == N_FUNC) {
+        if (s->kind == N_PROTOCOL) {
+            register_protocol(s->name, s);
+            scope_add(global, s->name, type_new_named(s->name));
+        } else if (s->kind == N_FUNC) {
             Type *ret = resolve_type(s->retType);
             scope_add(global, s->name, ret);
         } else if (s->kind == N_STRUCT || s->kind == N_CLASS) {

@@ -1,0 +1,27 @@
+protocol Animal {
+    var name: String { get }
+    func speak() -> String
+}
+
+class Dog implements Animal {
+    let name: String
+    init(name: String) {
+        self.name = name
+    }
+    func speak() -> String {
+        return "\(self.name) says Woof!"
+    }
+}
+
+struct Cat implements Animal {
+    let name: String
+    func speak() -> String {
+        return "\(self.name) says Meow!"
+    }
+}
+
+let d = Dog(name: "Rex")
+let c = Cat(name: "Whiskers")
+
+print(d.speak())
+print(c.speak())

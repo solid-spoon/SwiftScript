@@ -1,0 +1,11 @@
+// EXPECT_ERROR: does not conform to protocol 'Animal' (missing method 'speak')
+protocol Animal {
+    func speak() -> String
+}
+
+class Dog implements Animal {
+    let name: String
+    init(name: String) {
+        self.name = name
+    }
+}

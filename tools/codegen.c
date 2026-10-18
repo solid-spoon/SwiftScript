@@ -167,7 +167,7 @@ static void collect_decls(Node *prog, Ctx *ctx) {
                 if (name) ss_add(&ctx->globals, name);
             }
         }
-
+        if (s->kind == N_PROTOCOL && s->name) ss_add(&ctx->globals, s->name);
         if (s->kind == N_STRUCT && s->name) ss_add(&ctx->struct_names, s->name);
         if (s->kind == N_CLASS  && s->name) ss_add(&ctx->class_names, s->name);
         if (s->kind == N_ENUM && s->name && s->cases) {
@@ -366,6 +366,7 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     }
     case N_EXTENSION: return xstrdup("");
     case N_DEFER:     return xstrdup("");
+    case N_PROTOCOL:  return xstrdup(""); /* Erased at runtime */
     case N_STRUCT: return gen_struct(n, ctx);
     case N_ENUM:   return gen_enum(n, ctx);
     case N_CLASS:  return gen_class(n, ctx);
