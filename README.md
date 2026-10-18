@@ -60,12 +60,13 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 
 ## Status
 
-**v0.4 — typed core.** The compiler now performs static type checking. Type annotations are no longer just documentation; they are strictly enforced by the compiler before any JS is generated. Covered by 32 golden tests (positive and negative).
+**v0.5 — protocol-driven core.** The language now supports strict static type checking and protocol conformance. If your class or struct claims to implement an interface, the compiler will verify that it actually does before generating any JavaScript. Covered by 34 golden tests.
 
 ### Works today
 
 - `func`, `let`, `var`, `struct`, `enum`, `class`, `switch`, `for`, `while`, `if/else`
 - **Static Type Checking**: `Int`, `Double`, `String`, `Bool`, `[T]`, `T?`. Compile-time errors on type mismatches.
+- **Protocols**: `protocol P { ... }` and `implements P`. Validates required methods and properties at compile time.
 - **Optionals**: `T?`, `T!`, `??`, `!`, `?.`, `if let`, `guard let`
 - **Pattern matching**: `switch`, `if case`, `guard case`, enum payload extraction, ranges, `where` guards, exhaustiveness checking.
 - **String interpolation**: `"Hello, \(name)!"`
@@ -85,7 +86,6 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 
 ### Doesn't work yet
 
-- `protocol` definitions — explicitly fails with a friendly "not yet implemented" error.
 - Advanced generics (`struct Box<T>`) — parsed and erased, but not type-checked.
 - `Set<T>`, `Map<K, V>` (as standard library types).
 - Raw strings (`#"..."#`).
@@ -103,7 +103,7 @@ cd SwiftScript
 # Standard strict build (hardened, -Werror)
 ./build.sh
 
-# Run tests (builds + runs 32 golden tests)
+# Run tests (builds + runs 34 golden tests)
 ./test/run.sh
 
 # Debug build with ASAN and UBSAN
@@ -158,7 +158,7 @@ build.sh             Rust-strict build driver (ASAN/UBSAN, hardening)
 tools/               C source for the compiler
   lexer.c            tokenizer
   parser.c           recursive descent → AST
-  typecheck.c        symbol table + static type validation
+  typecheck.c        symbol table + static type validation + protocol checks
   codegen.c          AST → JavaScript
   sourcemap.c        Source Map V3 generation
   ast.[ch]           AST node types
@@ -195,6 +195,8 @@ The compiler takes ~2ms for a 100-line file.
 
 **How does the Type Checker work?** It builds a lexical scope tree (symbol table) and resolves types. Literals, arrays, optionals, and function returns are inferred. If a type annotation is present, strict compatibility is enforced (e.g., you cannot assign `String` to `Int`). `Any` acts as an escape hatch for dynamic JavaScript interop.
 
+**How do Protocols work?** Protocols are parsed into the AST and registered in the type checker's global scope. When a `class` or `struct` declares `implements P`, the type checker compares the declared methods and properties against the protocol's requirements. Protocols generate zero JavaScript code (they are erased), acting as pure compile-time contracts.
+
 **How do Source Maps work?** `swsc` tracks the original line/col of every AST statement and uses Base64 VLQ encoding to generate standard `.js.map` files. Node.js (`--enable-source-maps`) and Chrome DevTools will natively map your generated JS back to your `.sws` source.
 
 **How does `extension` work?** The parser collects all `extension Type {}` blocks. Before codegen, a pass merges these methods directly into the original `struct` or `class` AST node.
@@ -209,7 +211,6 @@ The compiler takes ~2ms for a 100-line file.
 
 Near-term:
 
-- `protocol` definitions
 - Generics (`Box<T>`) preservation and checking
 - Full LSP server (goto-def, rename, semantic tokens)
 
