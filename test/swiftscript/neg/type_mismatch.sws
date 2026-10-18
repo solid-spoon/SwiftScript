@@ -1,0 +1,3 @@
+// EXPECT_ERROR: Type mismatch
+let x: Int = 5
+let s: String = x

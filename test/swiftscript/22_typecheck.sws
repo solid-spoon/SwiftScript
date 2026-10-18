@@ -1,0 +1,9 @@
+let x: Int = 5
+let y: Double = 3.14
+let s: String = "hello"
+
+func add(a: Int, b: Int) -> Int {
+    return a + b
+}
+
+print(add(a: x, b: 10))

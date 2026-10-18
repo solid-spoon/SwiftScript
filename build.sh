@@ -25,6 +25,7 @@ readonly SOURCES=(
     "$SRC/parser.c"
     "$SRC/codegen.c"
     "$SRC/sourcemap.c"
+    "$SRC/typecheck.c"
     "$SRC/main.c"
 )
 readonly HEADERS=(
@@ -35,6 +36,7 @@ readonly HEADERS=(
     "$SRC/codegen.h"
     "$SRC/runtime.h"
     "$SRC/sourcemap.h"
+    "$SRC/typecheck.h"
 )
 
 V="${V:-0}"

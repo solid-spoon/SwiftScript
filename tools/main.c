@@ -15,6 +15,7 @@
 #include "codegen.h"
 #include "runtime.h"
 #include "sourcemap.h"
+#include "typecheck.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -253,6 +254,12 @@ static int compile_file(const char *src_path, const char *out_path, int no_runti
     Node *ast = parse_file(src_path, &src);
     if (!ast) return 1;
 
+    if (!typecheck_program(ast)) {
+        print_diagnostic(src_path, tc_error_line(), tc_error_col(), tc_error_msg());
+        free(src);
+        return 1;
+    }
+
     char *user_js = gen_program(ast);
     if (!user_js) {
         print_diagnostic(src_path, gen_error_line(), gen_error_col(), gen_error_msg());
@@ -296,6 +303,12 @@ static int check_file(const char *src_path) {
     char *src;
     Node *ast = parse_file(src_path, &src);
     if (!ast) return 1;
+
+    if (!typecheck_program(ast)) {
+        print_diagnostic(src_path, tc_error_line(), tc_error_col(), tc_error_msg());
+        free(src);
+        return 1;
+    }
 
     char *user_js = gen_program(ast);
     if (!user_js) {
@@ -364,6 +377,7 @@ static int walk(const char *src_root, const char *out_root,
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
+            if (strcmp(e->d_name, "neg") == 0 || e->d_name[0] == '.') continue;
             errors += walk(src_root, out_root, child_rel, check_only, no_runtime, depth + 1);
         } else if (S_ISREG(st.st_mode) && strcmp(path_ext(e->d_name), ".sws") == 0) {
             if (check_only) {
@@ -497,6 +511,13 @@ static void compile_recursive(const char *src_path, const char *tmp_dir, int no_
     char *src;
     Node *ast = parse_file(src_path, &src);
     if (!ast) { *has_err = 1; return; }
+
+    if (!typecheck_program(ast)) {
+        print_diagnostic(src_path, tc_error_line(), tc_error_col(), tc_error_msg());
+        *has_err = 1;
+        free(src);
+        return;
+    }
 
     for (int i = 0; i < ast->stmts->count; i++) {
         Node *s = ast->stmts->items[i];
