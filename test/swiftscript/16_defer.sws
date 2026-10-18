@@ -1,0 +1,20 @@
+func testDefer(n: Int) -> String {
+    defer {
+        print("defer 1")
+    }
+    defer {
+        print("defer 2")
+    }
+    
+    if n == 0 {
+        print("early return")
+        return "zero"
+    }
+    
+    print("normal flow")
+    return "other"
+}
+
+print(testDefer(0))
+print("---")
+print(testDefer(1))

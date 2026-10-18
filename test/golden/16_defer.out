@@ -1,0 +1,9 @@
+early return
+defer 2
+defer 1
+zero
+---
+normal flow
+defer 2
+defer 1
+other

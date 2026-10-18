@@ -924,6 +924,49 @@ static Node *parse_throw(P *p) {
     return n;
 }
 
+static Node *parse_extension(P *p) {
+    Token *kw = expect_kw(p, "extension");
+    Token *id = expect_id(p);
+    Node *n = node_new(N_EXTENSION, kw->line, kw->col);
+    n->name = xstrdup(id->value);
+    n->methods = list_new();
+    n->fields = list_new();
+
+    expect_op(p, "{");
+    while (!check_op(p, "}")) {
+        if (check_eof(p)) {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col, "Unterminated extension");
+        }
+        int is_static = 0, is_async = 0;
+        (void)parse_decl_modifiers(p, &is_static, &is_async);
+
+        if (check_kw(p, "func")) {
+            Node *m = parse_func(p);
+            m->is_static = is_static;
+            m->is_async = is_async;
+            list_push(n->methods, m);
+        } else if (check_kw(p, "init")) {
+            Node *m = parse_init(p);
+            m->is_static = is_static;
+            m->is_async = is_async;
+            list_push(n->methods, m);
+        } else {
+            Token *g = peek(p, 0);
+            p_err(p, g->line, g->col, "In extension expected func or init, got '%s'", g->value ? g->value : "<eof>");
+        }
+    }
+    expect_op(p, "}");
+    return n;
+}
+
+static Node *parse_defer(P *p) {
+    Token *kw = expect_kw(p, "defer");
+    Node *n = node_new(N_DEFER, kw->line, kw->col);
+    n->a = parse_block(p);
+    return n;
+}
+
 static Node *parse_stmt_body(P *p) {
     if (check_kw(p, "import")) return parse_import(p);
     if (check_kw(p, "export")) return parse_export(p);
@@ -937,17 +980,8 @@ static Node *parse_stmt_body(P *p) {
               "'protocol' is not yet implemented in swsc; "
               "use a class with `implements` for now");
     }
-    if (check_kw(p, "extension")) {
-        Token *t = peek(p, 0);
-        p_err(p, t->line, t->col,
-              "'extension' is not yet implemented in swsc");
-    }
-    if (check_kw(p, "defer")) {
-        Token *t = peek(p, 0);
-        p_err(p, t->line, t->col,
-              "'defer' is not yet implemented in swsc; "
-              "use try/catch for cleanup");
-    }
+    if (check_kw(p, "extension")) return parse_extension(p);
+    if (check_kw(p, "defer")) return parse_defer(p);
 
     if (check_kw(p, "try")) {
         if (peek(p, 1)->type == T_OP && peek(p, 1)->value &&

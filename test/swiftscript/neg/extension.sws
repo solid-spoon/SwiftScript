@@ -1,2 +1,2 @@
-// EXPECT_ERROR: 'extension' is not yet implemented
+// EXPECT_ERROR: Cannot extend unknown type 'Foo'
 extension Foo { }

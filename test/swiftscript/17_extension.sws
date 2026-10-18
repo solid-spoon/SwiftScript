@@ -1,0 +1,32 @@
+struct Point {
+    let x: Int
+    let y: Int
+}
+
+extension Point {
+    func sum() -> Int {
+        return self.x + self.y
+    }
+    
+    func describe() -> String {
+        return "Point(\(self.x), \(self.y))"
+    }
+}
+
+class Animal {
+    let name: String
+    init(name: String) { self.name = name }
+}
+
+extension Animal {
+    func speak() -> String {
+        return "\(self.name) makes a sound"
+    }
+}
+
+let p = Point(x: 3, y: 4)
+print(p.sum())
+print(p.describe())
+
+let a = Animal(name: "Rex")
+print(a.speak())
