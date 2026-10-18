@@ -60,33 +60,35 @@ It's a **source-to-source compiler**, not a transpiler framework. The generated 
 
 ## Status
 
-**v0.3 — polished core.** Usable for scripts, CLI tools, games, and VSCode extensions. The compiler core has passed a full security audit (no RCE, no memory unsafety) and is covered by 27 golden tests.
+**v0.4 — typed core.** The compiler now performs static type checking. Type annotations are no longer just documentation; they are strictly enforced by the compiler before any JS is generated. Covered by 32 golden tests (positive and negative).
 
 ### Works today
 
 - `func`, `let`, `var`, `struct`, `enum`, `class`, `switch`, `for`, `while`, `if/else`
+- **Static Type Checking**: `Int`, `Double`, `String`, `Bool`, `[T]`, `T?`. Compile-time errors on type mismatches.
 - **Optionals**: `T?`, `T!`, `??`, `!`, `?.`, `if let`, `guard let`
-- **Pattern matching**: enum cases with bindings, ranges, `where` guards, exhaustiveness checking
+- **Pattern matching**: `switch`, `if case`, `guard case`, enum payload extraction, ranges, `where` guards, exhaustiveness checking.
 - **String interpolation**: `"Hello, \(name)!"`
-- **Closures**: `nums.map { $0 * 2 }`, explicit params, `reduce` swap
-- **Structs & Classes**: `extends`, `super.init`, `override`, `implements` (erased), auto-frozen structs
-- **Computed Properties**: `var area: Double { return ... }` (compiles to `get` for classes, `Object.defineProperty` for structs)
-- **Extensions**: `extension Foo { ... }` (merges methods at compile time)
-- **Defer**: `defer { ... }` statements (compiles to `try/finally`)
+- **Multi-line strings**: `"""..."""` (with automatic dedent).
+- **Closures**: `nums.map { $0 * 2 }`, explicit params, `reduce` swap.
+- **Structs & Classes**: `extends`, `super.init`, `override`, `implements` (erased), auto-frozen structs.
+- **Computed Properties**: `var area: Double { return ... }` (compiles to `get` for classes, `Object.defineProperty` for structs).
+- **Extensions**: `extension Foo { ... }` (merges methods at compile time).
+- **Defer**: `defer { ... }` statements (compiles to `try/finally`).
 - **Destructuring**: `let (a, b) = ...` and `for (k, v) in ...`
-- **Block Scoping**: strict block-level variable lifetimes (like modern JS `let`/`const`)
+- **Block Scoping**: strict block-level variable lifetimes.
 - **Source Maps**: Debug runtime errors and set breakpoints directly in `.sws` files via Chrome DevTools / Node.js.
 - **Smart Diagnostics**: Rust-style compiler errors with caret `^` pointing to the exact column.
+- **Recursive `run`**: `swsc run` resolves and compiles the entire import tree dynamically.
 - **Modules**: `import`/`export` — ESM out of the box.
-- **VSCode Ecosystem**: A fully-featured [SwiftScript Toolkit](editors/swiftscript-toolkit/) extension (syntax, snippets, outline, folding, hover, diagnostics) written in SwiftScript itself.
+- **VSCode Ecosystem**: A fully-featured [SwiftScript Toolkit](editors/swiftscript-toolkit/) extension.
 
 ### Doesn't work yet
 
-- Type checking — **none**. Type annotations are parsed and erased. No errors on mismatches.
 - `protocol` definitions — explicitly fails with a friendly "not yet implemented" error.
-- `if case`, `guard case` — only `switch` does pattern matching.
-- `Set<T>`, `Map<K, V>`.
-- Multi-line strings (`"""..."""`), raw strings.
+- Advanced generics (`struct Box<T>`) — parsed and erased, but not type-checked.
+- `Set<T>`, `Map<K, V>` (as standard library types).
+- Raw strings (`#"..."#`).
 
 See [`docs/`](docs/) for the aspirational spec.
 
@@ -101,7 +103,7 @@ cd SwiftScript
 # Standard strict build (hardened, -Werror)
 ./build.sh
 
-# Run tests (builds + runs 27 golden tests)
+# Run tests (builds + runs 32 golden tests)
 ./test/run.sh
 
 # Debug build with ASAN and UBSAN
@@ -119,10 +121,10 @@ The build script is a Rust-strict driver: warnings are errors, and release build
 # Compile a single file — output goes next to the source
 ./swsc build hello.sws
 
-# Check syntax without writing files (for CI and editor integration)
+# Check syntax and types without writing files
 ./swsc check src/
 
-# Compile and run immediately
+# Compile and run immediately (resolves dependencies automatically)
 ./swsc run hello.sws
 
 # Pass arguments to the running program
@@ -131,25 +133,14 @@ The build script is a Rust-strict driver: warnings are errors, and release build
 
 Then run with `node --enable-source-maps` (ESM mode) or include the `.js` in your HTML via `<script type="module">`.
 
-### CLI
-
-```
-swsc build <path> [-o <out>] [--no-runtime]
-swsc check <path>
-swsc run   <file.sws> [-- args...]
-
-  <path>       file or directory (.sws)
-  -o <out>     output file or directory
-```
-
 ## VSCode extension
 
 The official VSCode extension is **[`editors/swiftscript-toolkit/`](editors/swiftscript-toolkit/)**. It is written entirely in SwiftScript and includes:
 
-1. **TextMate grammar** for syntax highlighting.
+1. **TextMate grammar** for syntax highlighting (including multi-line strings).
 2. **Snippets** for `func`, `class`, `iflet`, `defer`, `extension`, `vscmd`, etc.
 3. **Language features (LSP-lite)**: Outline, Folding, Hover descriptions, and Completion.
-4. **Diagnostics**: Hooks into `swsc check` to underline syntax errors in real-time.
+4. **Diagnostics**: Hooks into `swsc check` to underline syntax *and type* errors in real-time.
 
 To build and run the extension locally:
 ```bash
@@ -166,9 +157,10 @@ swsc                 compiled compiler binary
 build.sh             Rust-strict build driver (ASAN/UBSAN, hardening)
 tools/               C source for the compiler
   lexer.c            tokenizer
-  parser.c           recursive descent → AST (with DoS protection)
+  parser.c           recursive descent → AST
+  typecheck.c        symbol table + static type validation
   codegen.c          AST → JavaScript
-  sourcemap.c        Source Map V3 generation (Base64 VLQ)
+  sourcemap.c        Source Map V3 generation
   ast.[ch]           AST node types
   util.[ch]          dynamic strings, memory helpers
   main.c             CLI, file walker, smart diagnostics, runtime prelude
@@ -184,15 +176,24 @@ editors/
 examples/
   bank.sws           classes, inheritance, throws, optionals
   todos/todo.sws     enums, structs, closures
-  tetris/            A Tetris clone using HTML5 Canvas
-  vscode-swiftscript-explorer/  example custom TreeView extension
+  tetris/            A TETR.IO-style Tetris clone using HTML5 Canvas
 ```
+
+## How it compiles
+
+Five stages, no shared state:
+
+1. **Lex** — text → tokens (`lexer.c`)
+2. **Parse** — tokens → AST (`parser.c`)
+3. **Type Check** — AST → validated AST (`typecheck.c`)
+4. **Emit** — AST → JS string (`codegen.c`)
+5. **Wrap** — prepend runtime; wrap non-module code in IIFE
+
+The compiler takes ~2ms for a 100-line file.
 
 ## Design choices
 
-**Tabs vs spaces?** Tabs, 4 spaces wide, for the source. Output JS is unformatted — pipe it through `prettier` if you care.
-
-**Runtime in every file?** Yes. ~1.5 KB of `print`, `String`, `_force`, `_range` prepended to every output file. A bundler deduplicates in 10 ms.
+**How does the Type Checker work?** It builds a lexical scope tree (symbol table) and resolves types. Literals, arrays, optionals, and function returns are inferred. If a type annotation is present, strict compatibility is enforced (e.g., you cannot assign `String` to `Int`). `Any` acts as an escape hatch for dynamic JavaScript interop.
 
 **How do Source Maps work?** `swsc` tracks the original line/col of every AST statement and uses Base64 VLQ encoding to generate standard `.js.map` files. Node.js (`--enable-source-maps`) and Chrome DevTools will natively map your generated JS back to your `.sws` source.
 
@@ -202,21 +203,21 @@ examples/
 
 **How do Computed Properties work?** In classes, they become native `get` accessors. In structs, they are defined via `Object.defineProperty(_self, ..., { get: ... })` *before* calling `Object.freeze(_self)`.
 
-**Why C?** The compiler is ~4500 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
+**Why C?** The compiler is ~5000 lines and takes no dependencies. `gcc` is available everywhere. A single binary runs without a Node.js toolchain.
 
 ## Roadmap
 
 Near-term:
 
-- `if case` / `guard case` (pattern matching outside of `switch`)
 - `protocol` definitions
-- Multi-line strings (`"""..."""`)
+- Generics (`Box<T>`) preservation and checking
+- Full LSP server (goto-def, rename, semantic tokens)
 
 Later:
 
-- Type checker
-- Full LSP server (goto-def, rename, semantic tokens)
+- `swsc fmt` (auto-formatter)
 - `Set<T>`, `Map<K, V>`
+- Raw strings
 
 See [`docs/*.md`](docs/) for the full aspirational spec. The docs lie in the right direction — the code is what actually runs.
 
