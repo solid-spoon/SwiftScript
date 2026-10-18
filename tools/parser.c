@@ -258,10 +258,24 @@ static Node *parse_program(P *p) {
 
 static Node *parse_let(P *p) {
     Token *kw = next_tok(p);
-    Token *id = expect_id(p);
     Node *n = node_new(N_LET, kw->line, kw->col);
     n->sval = xstrdup(kw->value);
-    n->name = xstrdup(id->value);
+
+    if (match_op(p, "(")) {
+        n->items = list_new();
+        if (!check_op(p, ")")) {
+            for (;;) {
+                Token *id = expect_id(p);
+                list_push(n->items, xstrdup(id->value));
+                if (!match_op(p, ",")) break;
+            }
+        }
+        expect_op(p, ")");
+    } else {
+        Token *id = expect_id(p);
+        n->name = xstrdup(id->value);
+    }
+
     if (match_op(p, ":")) n->type = parse_type(p);
     if (match_op(p, "=")) n->a = parse_expr(p, 0, 0);
     match_op(p, ";");
@@ -270,10 +284,24 @@ static Node *parse_let(P *p) {
 
 static Node *parse_one_binding(P *p) {
     Token *kw = next_tok(p);
-    Token *id = expect_id(p);
     Node *b = node_new(N_LET, kw->line, kw->col);
     b->sval = xstrdup(kw->value);
-    b->name = xstrdup(id->value);
+
+    if (match_op(p, "(")) {
+        b->items = list_new();
+        if (!check_op(p, ")")) {
+            for (;;) {
+                Token *id = expect_id(p);
+                list_push(b->items, xstrdup(id->value));
+                if (!match_op(p, ",")) break;
+            }
+        }
+        expect_op(p, ")");
+    } else {
+        Token *id = expect_id(p);
+        b->name = xstrdup(id->value);
+    }
+
     expect_op(p, "=");
     b->a = parse_expr(p, 0, 1);
     return b;
@@ -828,13 +856,24 @@ static Node *parse_while(P *p) {
 
 static Node *parse_for(P *p) {
     Token *kw = expect_kw(p, "for");
-    /* LIMITATION: no `for (a, b) in xs` destructuring and no `where`
-     * clause. Both are syntactic sugar that can be added later without
-     * AST churn (N_FOR already exists). */
-    Token *id = expect_id(p);
-    expect_kw(p, "in");
     Node *n = node_new(N_FOR, kw->line, kw->col);
-    n->name = xstrdup(id->value);
+    
+    if (match_op(p, "(")) {
+        n->items = list_new();
+        if (!check_op(p, ")")) {
+            for (;;) {
+                Token *id = expect_id(p);
+                list_push(n->items, xstrdup(id->value));
+                if (!match_op(p, ",")) break;
+            }
+        }
+        expect_op(p, ")");
+    } else {
+        Token *id = expect_id(p);
+        n->name = xstrdup(id->value);
+    }
+
+    expect_kw(p, "in");
     n->a = parse_expr(p, 0, 1);
     n->b = parse_block(p);
     return n;

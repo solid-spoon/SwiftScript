@@ -313,12 +313,27 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     switch (n->kind) {
     case N_IMPORT: return gen_import(n);
     case N_LET: {
-        if (ss_has(&ctx->locals, n->name)) codegen_error(n->line, n->col, "Duplicate declaration of '%s'", n->name);
         const char *kw = (n->sval && strcmp(n->sval, "var") == 0) ? "let" : "const";
         char *v = n->a ? gen_expr(n->a, ctx) : xstrdup("undefined");
-        ss_add(&ctx->locals, n->name);
-        if (n->exported) sb_put(&sb, "export ");
-        sb_printf(&sb, "%s %s = %s;", kw, n->name, v);
+        
+        if (n->items && n->items->count > 0) {
+            sb_printf(&sb, "%s [", kw);
+            for (int i = 0; i < n->items->count; i++) {
+                if (i) sb_put(&sb, ", ");
+                const char *name = (const char *)n->items->items[i];
+                if (ss_has(&ctx->locals, name)) {
+                    codegen_error(n->line, n->col, "Duplicate declaration of '%s'", name);
+                }
+                ss_add(&ctx->locals, name);
+                sb_put(&sb, name);
+            }
+            sb_printf(&sb, "] = %s;", v);
+        } else {
+            if (ss_has(&ctx->locals, n->name)) codegen_error(n->line, n->col, "Duplicate declaration of '%s'", n->name);
+            ss_add(&ctx->locals, n->name);
+            if (n->exported) sb_put(&sb, "export ");
+            sb_printf(&sb, "%s %s = %s;", kw, n->name, v);
+        }
         free(v);
         break;
     }
@@ -386,11 +401,29 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     case N_FOR: {
         Ctx inner = ctx_copy(ctx);
         ss_add(&inner.break_stack, "loop");
-        ss_add(&inner.locals, n->name);
+        
         char *src = gen_expr(n->a, ctx);
+        StrBuf var_def; sb_init(&var_def);
+        
+        if (n->items && n->items->count > 0) {
+            sb_put(&var_def, "[");
+            for (int i = 0; i < n->items->count; i++) {
+                if (i) sb_put(&var_def, ", ");
+                const char *name = (const char *)n->items->items[i];
+                ss_add(&inner.locals, name);
+                sb_put(&var_def, name);
+            }
+            sb_put(&var_def, "]");
+        } else {
+            ss_add(&inner.locals, n->name);
+            sb_put(&var_def, n->name);
+        }
+        
         char *b = gen_stmt(n->b, &inner);
-        sb_printf(&sb, "for (const %s of %s) %s", n->name, src, b);
+        sb_printf(&sb, "for (const %s of %s) %s", var_def.buf, src, b);
+        
         free(src); free(b);
+        sb_free(&var_def);
         ctx_destroy(&inner);
         break;
     }
@@ -454,8 +487,22 @@ static char *gen_if_let_stmt(Node *n, Ctx *ctx) {
         Node *b = n->items->items[i];
         char *v = gen_expr(b->a, ctx);
         const char *kw = (b->sval && strcmp(b->sval, "var") == 0) ? "let" : "const";
-        sb_printf(&sb, "  const _t%d_%d = %s;\n  if (_t%d_%d != null) {\n    %s %s = _t%d_%d;\n", id, i, v, id, i, kw, b->name, id, i);
-        ss_add(&body_ctx.locals, b->name);
+        
+        sb_printf(&sb, "  const _t%d_%d = %s;\n  if (_t%d_%d != null) {\n", id, i, v, id, i);
+        
+        if (b->items && b->items->count > 0) {
+            sb_printf(&sb, "    %s [", kw);
+            for (int k = 0; k < b->items->count; k++) {
+                if (k) sb_put(&sb, ", ");
+                const char *name = (const char *)b->items->items[k];
+                ss_add(&body_ctx.locals, name);
+                sb_put(&sb, name);
+            }
+            sb_printf(&sb, "] = _t%d_%d;\n", id, i);
+        } else {
+            sb_printf(&sb, "    %s %s = _t%d_%d;\n", kw, b->name, id, i);
+            ss_add(&body_ctx.locals, b->name);
+        }
         free(v);
     }
 

@@ -1,0 +1,14 @@
+let tuple = (10, 20)
+let (a, b) = tuple
+print(a)
+print(b)
+
+let arr = [(1, "one"), (2, "two"), (3, "three")]
+for (num, name) in arr {
+    print("\(num) is \(name)")
+}
+
+let optionalTuple: (Int, Int)? = (99, 100)
+if let (x, y) = optionalTuple {
+    print("Unwrapped: \(x) and \(y)")
+}
