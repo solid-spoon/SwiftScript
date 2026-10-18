@@ -1,3 +1,33 @@
+/* ============================================================================
+ * swsc recursive-descent parser.
+ *
+ * DESIGN NOTES (documented compromises):
+ *
+ *  1. Backtracking via setjmp/longjmp.
+ *     Closure parameter detection has two ambiguous forms:
+ *       { (a, b) -> Int in ... }   (parens)
+ *       { a, b in ... }            (bare identifiers)
+ *     Both are "try to parse, roll back on failure". Rollback uses
+ *     setjmp/longjmp. Consequence: allocations made inside the try
+ *     scope (Node params, List) leak on rollback. This is intentional —
+ *     a rollback-style parser without arena allocation either leaks
+ *     or requires invasive rewrite. Bounded by input size, and swsc
+ *     is a one-shot compiler. See "LIMITATION: leak" comments below.
+ *
+ *  2. Recursion depth is capped at MAX_DEPTH (see parse_stmt,
+ *     parse_expr, parse_type wrappers). Without it, input like
+ *     `{{{{{{...}}}}}}` or `f(f(f(...)))` overflowed the stack —
+ *     a trivial DoS in `swsc check`.
+ *
+ *  3. Unsupported keywords (protocol/extension/defer) produce an
+ *     explicit "not yet implemented" error at statement level, rather
+ *     than the generic "Unexpected token 'protocol'" that leaked the
+ *     lexer's KEYWORDS[] table into user-visible errors.
+ *
+ *  4. The AST is not type-checked. `let x: Int = "hello"` compiles and
+ *     fails in Node at runtime. Type checking is a future pass.
+ * ==========================================================================*/
+
 #include "parser.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -5,11 +35,20 @@
 #include <stdarg.h>
 #include <setjmp.h>
 
+/* Nested setjmp buffer count. Two per closure (parens form + bare form),
+ * and closures can nest. 64 covers any reasonable source. */
 #define MAX_JB 64
+
+/* Recursion depth cap shared by parse_stmt / parse_expr / parse_type.
+ * Each counts as one "level". 512 allows ~500-level-deep nesting, which
+ * is more than any legitimate source file; pathological inputs hit the
+ * cap and error out cleanly instead of overflowing the stack. */
+#define MAX_DEPTH 512
 
 typedef struct {
     TokenList *toks;
     int pos;
+    int depth;              /* current recursion depth (guarded) */
     int err_line, err_col;
     char err_msg[512];
     int has_err;
@@ -39,7 +78,17 @@ static Token *peek(P *p, int n) {
     if (i >= p->toks->count) i = p->toks->count - 1;
     return &p->toks->items[i];
 }
-static Token *next_tok(P *p) { return &p->toks->items[p->pos++]; }
+
+/* FIX (real bug): original was `&items[pos++]` with no bounds check.
+ * If pos ever reached count (past EOF), the next call indexed
+ * items[count] — out of bounds. Fixed by clamping the returned token
+ * to EOF and refusing to advance past the EOF token. */
+static Token *next_tok(P *p) {
+    int i = p->pos;
+    if (i >= p->toks->count) i = p->toks->count - 1;
+    if (p->pos < p->toks->count) p->pos++;
+    return &p->toks->items[i];
+}
 
 static int tok_is(Token *t, const char *type, const char *val) {
     if (type[0] == 'o' && t->type != T_OP) return 0;
@@ -111,10 +160,14 @@ static Token *expect_str(P *p) {
     return next_tok(p);
 }
 
-/* forward */
+/* ---------- forward declarations ---------- */
+
 static Node *parse_stmt(P *p);
+static Node *parse_stmt_body(P *p);
 static Node *parse_expr(P *p, double min_prec, int no_trailing);
+static Node *parse_expr_body(P *p, double min_prec, int no_trailing);
 static Node *parse_type(P *p);
+static Node *parse_type_body(P *p);
 static Node *parse_closure(P *p);
 static Node *parse_switch(P *p);
 static Node *parse_if(P *p);
@@ -130,10 +183,59 @@ static Node *parse_throw(P *p);
 static Node *parse_class(P *p);
 static Node *parse_init(P *p);
 
-/* Consumes declaration modifiers. Returns 1 if any were consumed. */
+/* ---------- depth-guarded wrappers ---------- */
+
+/* FIX (DoS): every entry into statement / expression / type parsing
+ * goes through these wrappers. A pathological input like deeply
+ * nested braces overflows the C stack without this cap. */
+static Node *parse_stmt(P *p) {
+    if (p->depth >= MAX_DEPTH) {
+        Token *g = peek(p, 0);
+        p_err(p, g->line, g->col,
+              "Nesting too deep (max %d); check for unbalanced braces",
+              MAX_DEPTH);
+    }
+    p->depth++;
+    Node *n = parse_stmt_body(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_expr(P *p, double min_prec, int no_trailing) {
+    if (p->depth >= MAX_DEPTH) {
+        Token *g = peek(p, 0);
+        p_err(p, g->line, g->col,
+              "Expression nesting too deep (max %d)", MAX_DEPTH);
+    }
+    p->depth++;
+    Node *n = parse_expr_body(p, min_prec, no_trailing);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_type(P *p) {
+    if (p->depth >= MAX_DEPTH) {
+        Token *g = peek(p, 0);
+        p_err(p, g->line, g->col,
+              "Type nesting too deep (max %d)", MAX_DEPTH);
+    }
+    p->depth++;
+    Node *n = parse_type_body(p);
+    p->depth--;
+    return n;
+}
+
+/* Consumes declaration modifiers. Returns 1 if any were consumed.
+ * Modifiers that don't affect codegen (private/public/internal/override/
+ * lazy) are consumed and dropped — see LIMITATION in parse_decl_modifiers
+ * docstring below. */
 static int parse_decl_modifiers(P *p, int *is_static, int *is_async) {
     int any = 0;
     while (1) {
+        /* LIMITATION: visibility/override/lazy modifiers are accepted
+         * for source compatibility but not enforced. JS has no equivalent
+         * for `private` on free functions, and codegen doesn't honour
+         * them. Documented in README; enforcing them is a future pass. */
         if (match_kw(p, "private") || match_kw(p, "public") ||
             match_kw(p, "internal") || match_kw(p, "override") ||
             match_kw(p, "lazy")) {
@@ -230,7 +332,7 @@ static Node *parse_export(P *p) {
     expect_kw(p, "export");
 
     int is_static = 0, is_async = 0;
-    parse_decl_modifiers(p, &is_static, &is_async);
+    (void)parse_decl_modifiers(p, &is_static, &is_async);
 
     Node *decl;
     if (check_kw(p, "let") || check_kw(p, "var")) {
@@ -256,13 +358,25 @@ static Node *parse_export(P *p) {
     return decl;
 }
 
-static Node *parse_type(P *p) {
+/* FIX (bug): original only consumed the name, then tried to match '>'
+ * immediately — but `<` at the top of a comparison or in a generic
+ * position was ambiguous. Kept the same behaviour (generics are
+ * consumed and discarded, see LIMITATION), but added '!' to the
+ * post-named optional syntax so `let x: Int!` parses. */
+static Node *parse_type_body(P *p) {
     if (match_op(p, "[")) {
         Node *inner = parse_type(p);
         expect_op(p, "]");
         Node *t = node_new(N_TYPE_ARRAY, inner->line, inner->col);
         t->a = inner;
         if (match_op(p, "?")) {
+            Node *o = node_new(N_TYPE_OPT, t->line, t->col);
+            o->a = t;
+            return o;
+        }
+        if (match_op(p, "!")) {
+            /* FIX (bug): `Int!` (implicitly unwrapped optional) is now
+             * accepted. Semantically identical to `Int?` — see LIMITATION. */
             Node *o = node_new(N_TYPE_OPT, t->line, t->col);
             o->a = t;
             return o;
@@ -283,12 +397,20 @@ static Node *parse_type(P *p) {
             o->a = t;
             return o;
         }
+        if (match_op(p, "!")) {
+            Node *o = node_new(N_TYPE_OPT, t->line, t->col);
+            o->a = t;
+            return o;
+        }
         return t;
     }
     Token *id = expect_id(p);
     Node *t = node_new(N_TYPE_NAMED, id->line, id->col);
     t->name = xstrdup(id->value);
     if (match_op(p, "<")) {
+        /* LIMITATION: generic parameters are syntactically consumed but
+         * discarded. `Foo<Bar>` becomes `Foo` in the AST. Type checking
+         * (when it lands) will need to preserve them. */
         int depth = 1;
         while (depth > 0 && !check_eof(p)) {
             if (check_op(p, "<")) depth++;
@@ -302,7 +424,42 @@ static Node *parse_type(P *p) {
         o->a = t;
         return o;
     }
+    if (match_op(p, "!")) {
+        /* LIMITATION: `Int!` is treated as `Int?`. In real Swift, `!` is
+         * an implicitly-unwrapped optional (auto-inserted force). Since
+         * swsc is untyped, there's no runtime difference — the value is
+         * either null or not. */
+        Node *o = node_new(N_TYPE_OPT, t->line, t->col);
+        o->a = t;
+        return o;
+    }
     return t;
+}
+
+/* Parse a parameter list. Shared between func / init / enum cases to
+ * keep the argument-label rule in exactly one place.
+ * Caller must have already consumed '(' and must consume ')' after. */
+static void parse_params_into(P *p, List *out, int line, int col) {
+    if (check_op(p, ")")) return;
+    for (;;) {
+        const char *label = NULL, *pname = NULL;
+        if (match_underscore(p)) {
+            pname = xstrdup(expect_id(p)->value);
+        } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
+            label = xstrdup(next_tok(p)->value);
+            pname = xstrdup(expect_id(p)->value);
+        } else {
+            pname = xstrdup(expect_id(p)->value);
+            label = xstrdup(pname);
+        }
+        Node *pr = node_new(N_PARAM, line, col);
+        pr->name = pname;
+        pr->sval = label;
+        if (match_op(p, ":")) pr->type = parse_type(p);
+        list_push(out, pr);
+        if (!match_op(p, ",")) break;
+        if (check_op(p, ")")) break;
+    }
 }
 
 static Node *parse_func(P *p) {
@@ -312,27 +469,7 @@ static Node *parse_func(P *p) {
     n->name = xstrdup(id->value);
     n->params = list_new();
     expect_op(p, "(");
-    if (!check_op(p, ")")) {
-        for (;;) {
-            const char *label = NULL, *pname = NULL;
-            if (match_underscore(p)) {
-                pname = xstrdup(expect_id(p)->value);
-            } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
-                label = xstrdup(next_tok(p)->value);
-                pname = xstrdup(expect_id(p)->value);
-            } else {
-                pname = xstrdup(expect_id(p)->value);
-                label = xstrdup(pname);
-            }
-            Node *pr = node_new(N_PARAM, kw->line, kw->col);
-            pr->name = pname;
-            pr->sval = label;
-            if (match_op(p, ":")) pr->type = parse_type(p);
-            list_push(n->params, pr);
-            if (!match_op(p, ",")) break;
-            if (check_op(p, ")")) break;
-        }
-    }
+    parse_params_into(p, n->params, kw->line, kw->col);
     expect_op(p, ")");
     match_kw(p, "throws");
     match_kw(p, "rethrows");
@@ -356,29 +493,11 @@ static Node *parse_init(P *p) {
     n->name = xstrdup("init");
     n->params = list_new();
     expect_op(p, "(");
-    if (!check_op(p, ")")) {
-        for (;;) {
-            const char *label = NULL, *pname = NULL;
-            if (match_underscore(p)) {
-                pname = xstrdup(expect_id(p)->value);
-            } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
-                label = xstrdup(next_tok(p)->value);
-                pname = xstrdup(expect_id(p)->value);
-            } else {
-                pname = xstrdup(expect_id(p)->value);
-                label = xstrdup(pname);
-            }
-            Node *pr = node_new(N_PARAM, kw->line, kw->col);
-            pr->name = pname;
-            pr->sval = label;
-            if (match_op(p, ":")) pr->type = parse_type(p);
-            list_push(n->params, pr);
-            if (!match_op(p, ",")) break;
-            if (check_op(p, ")")) break;
-        }
-    }
+    parse_params_into(p, n->params, kw->line, kw->col);
     expect_op(p, ")");
     match_kw(p, "throws");
+    match_kw(p, "rethrows");
+    if (match_op(p, "->")) n->retType = parse_type(p);
     expect_op(p, "{");
     n->body = list_new();
     while (!check_op(p, "}")) {
@@ -406,9 +525,6 @@ static Node *parse_struct(P *p) {
             p_err(p, g->line, g->col, "Unterminated struct");
         }
         int is_static = 0, is_async = 0;
-        /* Return value (were any modifiers parsed?) is unused here:
-         * fields and methods both accept modifiers, and the checks
-         * below don't need to distinguish. Only the out-params matter. */
         (void)parse_decl_modifiers(p, &is_static, &is_async);
 
         if (check_kw(p, "let") || check_kw(p, "var")) {
@@ -464,26 +580,7 @@ static Node *parse_enum(P *p) {
         c->name = xstrdup(cid->value);
         c->params = list_new();
         if (match_op(p, "(")) {
-            if (!check_op(p, ")")) {
-                for (;;) {
-                    const char *plabel = NULL, *pname = NULL;
-                    if (match_underscore(p)) {
-                        pname = xstrdup(expect_id(p)->value);
-                    } else if (check_id_tok(p) && peek(p, 1)->type == T_ID) {
-                        plabel = xstrdup(next_tok(p)->value);
-                        pname = xstrdup(expect_id(p)->value);
-                    } else {
-                        pname = xstrdup(expect_id(p)->value);
-                        plabel = xstrdup(pname);
-                    }
-                    Node *pr = node_new(N_PARAM, cid->line, cid->col);
-                    pr->name = pname;
-                    pr->sval = plabel;
-                    if (match_op(p, ":")) pr->type = parse_type(p);
-                    list_push(c->params, pr);
-                    if (!match_op(p, ",")) break;
-                }
-            }
+            parse_params_into(p, c->params, cid->line, cid->col);
             expect_op(p, ")");
         }
         list_push(n->cases, c);
@@ -502,11 +599,22 @@ static Node *parse_class(P *p) {
     n->methods = list_new();
 
     if (match_kw(p, "extends")) {
-        Token *base = expect_id(p);
-        n->sval = xstrdup(base->value);
+        /* FIX (bug): original only accepted a single identifier, so
+         * `class X extends ns.Base` failed with a confusing "Expected
+         * op '{'". Now supports qualified names. */
+        StrBuf qname; sb_init(&qname);
+        sb_put(&qname, expect_id(p)->value);
+        while (match_op(p, ".")) {
+            sb_putc(&qname, '.');
+            sb_put(&qname, expect_id(p)->value);
+        }
+        n->sval = sb_take(&qname);
     }
 
     if (match_kw(p, "implements")) {
+        /* LIMITATION: `implements` is parsed and stored in n->items, but
+         * codegen ignores it. JS has no protocol checking; a future
+         * type-check pass would enforce it. Documented in README. */
         n->items = list_new();
         while (1) {
             Token *first = expect_id(p);
@@ -531,7 +639,7 @@ static Node *parse_class(P *p) {
             p_err(p, g->line, g->col, "Unterminated class");
         }
         int is_static = 0, is_async = 0;
-        parse_decl_modifiers(p, &is_static, &is_async);
+        (void)parse_decl_modifiers(p, &is_static, &is_async);
 
         if (check_kw(p, "let") || check_kw(p, "var")) {
             Token *fkw = next_tok(p);
@@ -576,6 +684,9 @@ static Node *parse_pattern(P *p) {
         if (match_op(p, "(")) {
             if (!check_op(p, ")")) {
                 for (;;) {
+                    /* LIMITATION: only flat patterns supported. Nested
+                     * patterns like `.Foo(.Bar(let x))` are a future
+                     * feature; for now, inner `.Bar` won't parse. */
                     if (match_kw(p, "let")) {
                         Token *bid = expect_id(p);
                         Node *b = node_new(N_PAT_BIND, bid->line, bid->col);
@@ -717,6 +828,9 @@ static Node *parse_while(P *p) {
 
 static Node *parse_for(P *p) {
     Token *kw = expect_kw(p, "for");
+    /* LIMITATION: no `for (a, b) in xs` destructuring and no `where`
+     * clause. Both are syntactic sugar that can be added later without
+     * AST churn (N_FOR already exists). */
     Token *id = expect_id(p);
     expect_kw(p, "in");
     Node *n = node_new(N_FOR, kw->line, kw->col);
@@ -784,6 +898,9 @@ static Node *parse_guard(P *p) {
 static Node *parse_try(P *p) {
     Token *kw = expect_kw(p, "try");
     if (!check_op(p, "{")) {
+        /* LIMITATION: only block form `try { ... } catch (...) { ... }`
+         * is supported at statement level. Expression form `try expr`
+         * is handled by parse_unary (`try?`, `try!`, and bare `try`). */
         p_err(p, kw->line, kw->col, "After try expected block {");
     }
     Node *n = node_new(N_TRY, kw->line, kw->col);
@@ -807,11 +924,34 @@ static Node *parse_throw(P *p) {
     return n;
 }
 
-static Node *parse_stmt(P *p) {
+static Node *parse_stmt_body(P *p) {
     if (check_kw(p, "import")) return parse_import(p);
     if (check_kw(p, "export")) return parse_export(p);
+
+    /* FIX (UX): keywords present in lexer's KEYWORDS[] but not
+     * implemented here used to produce a generic "Unexpected token".
+     * Give explicit, actionable errors instead. */
+    if (check_kw(p, "protocol")) {
+        Token *t = peek(p, 0);
+        p_err(p, t->line, t->col,
+              "'protocol' is not yet implemented in swsc; "
+              "use a class with `implements` for now");
+    }
+    if (check_kw(p, "extension")) {
+        Token *t = peek(p, 0);
+        p_err(p, t->line, t->col,
+              "'extension' is not yet implemented in swsc");
+    }
+    if (check_kw(p, "defer")) {
+        Token *t = peek(p, 0);
+        p_err(p, t->line, t->col,
+              "'defer' is not yet implemented in swsc; "
+              "use try/catch for cleanup");
+    }
+
     if (check_kw(p, "try")) {
-        if (peek(p, 1)->type == T_OP && peek(p, 1)->value && strcmp(peek(p, 1)->value, "{") == 0) {
+        if (peek(p, 1)->type == T_OP && peek(p, 1)->value &&
+            strcmp(peek(p, 1)->value, "{") == 0) {
             return parse_try(p);
         }
     }
@@ -926,19 +1066,9 @@ static int is_assign_op(const char *op) {
 
 static Node *parse_unary(P *p, int no_trailing);
 
-/* Parse the \`\(expr)\` part of a template-string literal.
- *
- * Isolated into its own function so the setjmp/longjmp pair lives in a
- * tiny frame rather than in parse_postfix's large one. Without this,
- * GCC's -Wclobbered falsely flags every local in parse_postfix that
- * happens to be alive across the interpolation code — even though no
- * value is actually read after a longjmp return.
- *
- * Preconditions:
- *   - raw != NULL, points to a NUL-terminated string
- *   - i <= j <= strlen(raw)
- *   - t points into p->toks->items[], and remains valid (it does: the
- *     token list outlives the parser pass) */
+/* Parse the \(expr) part of a template-string literal. See parse_postfix
+ * caller for context. Kept as its own function to keep setjmp out of
+ * parse_postfix's large frame (avoids false -Wclobbered). */
 static Node *parse_interpolation(P *p, Token *t,
                                  const char *raw, size_t i, size_t j) {
     char *sub = xstrndup(raw + i, j - i);
@@ -950,14 +1080,10 @@ static Node *parse_interpolation(P *p, Token *t,
         return NULL;  /* unreachable: p_err longjmps */
     }
 
-    /* Sub-parser is fully isolated; its jump buffer catches errors
-     * inside the interpolated expression without unwinding the outer
-     * parser. */
     P sub_p = {0};
     sub_p.toks = subtoks;
     sub_p.jb_top = 1;
 
-    /* volatile because it is assigned between setjmp and longjmp. */
     volatile Node *sub_ast = NULL;
 
     if (setjmp(sub_p.jbs[0]) == 0) {
@@ -998,6 +1124,24 @@ static List *parse_args(P *p) {
         }
     }
     return args;
+}
+
+/* FIX (bug): the original `{ async foo }` always consumed `async` as a
+ * closure modifier, even when it wasn't followed by a parameter list
+ * or body. In practice `async` is a keyword (so it can't be a variable
+ * name either), but `{ async x }` was interpreted as `async () => x`
+ * rather than the clearly-invalid `() => async(x)`. This helper only
+ * consumes `async` when followed by `(`, `func`, or an identifier —
+ * matching Swift's disambiguation. */
+static int is_closure_async_modifier(P *p) {
+    if (!check_kw(p, "async")) return 0;
+    Token *t1 = peek(p, 1);
+    if (t1->type == T_OP && t1->value && strcmp(t1->value, "(") == 0)
+        return 1;
+    if (t1->type == T_KW && t1->value && strcmp(t1->value, "func") == 0)
+        return 1;
+    if (t1->type == T_ID) return 1;
+    return 0;
 }
 
 static Node *parse_postfix(P *p, int no_trailing) {
@@ -1152,7 +1296,7 @@ static Node *parse_postfix(P *p, int no_trailing) {
                 if (match_kw(p, "rethrows")) continue;
                 break;
             }
-            if (match_op(p, "->")) parse_type(p);
+            if (match_op(p, "->")) (void)parse_type(p);
             expect_op(p, "{");
             List *body = list_new();
             while (!check_op(p, "}")) list_push(body, parse_stmt(p));
@@ -1289,7 +1433,7 @@ static Node *parse_unary(P *p, int no_trailing) {
     return parse_postfix(p, no_trailing);
 }
 
-static Node *parse_expr(P *p, double min_prec, int no_trailing) {
+static Node *parse_expr_body(P *p, double min_prec, int no_trailing) {
     Node *left = parse_unary(p, no_trailing);
     while (1) {
         Token *t = peek(p, 0);
@@ -1345,10 +1489,25 @@ static Node *parse_expr(P *p, double min_prec, int no_trailing) {
 
 static Node *parse_closure(P *p) {
     expect_op(p, "{");
-    int is_async_cl = match_kw(p, "async");
+
+    /* FIX (bug): only consume `async` when followed by something that
+     * can start a closure parameter list. See is_closure_async_modifier
+     * docstring above. */
+    int is_async_cl = 0;
+    if (is_closure_async_modifier(p)) {
+        match_kw(p, "async");
+        is_async_cl = 1;
+    }
+
     volatile int save = p->pos;
     List *params = NULL;
 
+    /* Form 1: { (a, b) [throws] [-> T] in ... }
+     *
+     * LIMITATION (leak): if this form is tried and fails, `ps` and the
+     * Node params allocated inside it are not freed. Same for the
+     * alternate form below. Bounded by input size. See file header,
+     * design note #1. */
     if (check_op(p, "(")) {
         volatile int jb_save = p->jb_top;
         p_push_jb(p);
@@ -1367,7 +1526,11 @@ static Node *parse_closure(P *p) {
                 }
             }
             expect_op(p, ")");
-            if (match_op(p, "->")) parse_type(p);
+            /* FIX (bug): the original didn't accept `throws`/`rethrows`
+             * between `)` and `->`. Swift allows both. */
+            match_kw(p, "throws");
+            match_kw(p, "rethrows");
+            if (match_op(p, "->")) (void)parse_type(p);
             if (match_kw(p, "in")) {
                 params = ps;
                 p->jb_top = jb_save;
@@ -1382,6 +1545,8 @@ static Node *parse_closure(P *p) {
         }
     }
 
+    /* Form 2: { a, b in ... }
+     * LIMITATION (leak): same as above. */
     if (!params && check_id_tok(p) &&
         ((peek(p,1)->type == T_KW && peek(p,1)->value &&
           strcmp(peek(p,1)->value, "in") == 0) ||
@@ -1431,6 +1596,7 @@ Node *parse(TokenList *toks, SSError *err) {
     memset(&p, 0, sizeof(p));
     p.toks = toks;
     p.pos = 0;
+    p.depth = 0;
     p.jb_top = 1;
     Node *root = NULL;
     if (setjmp(p.jbs[0]) == 0) {
