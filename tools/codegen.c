@@ -855,16 +855,29 @@ static char *gen_struct(Node *n, Ctx *parent) {
     StrBuf sb; sb_init(&sb);
     if (n->exported) sb_put(&sb, "export ");
     sb_printf(&sb, "function %s(_args) {\n", n->name);
-    if (n->fields->count) {
+    int real_field_count = 0;
+    for (int i = 0; i < n->fields->count; i++) {
+        if (!((Node*)n->fields->items[i])->is_computed) real_field_count++;
+    }
+
+    if (real_field_count > 0) {
         sb_put(&sb, "  const { ");
+        int first = 1;
         for (int i = 0; i < n->fields->count; i++) {
-            if (i) sb_put(&sb, ", ");
-            sb_put(&sb, ((Node*)n->fields->items[i])->name);
+            Node *fld = n->fields->items[i];
+            if (fld->is_computed) continue;
+            if (!first) sb_put(&sb, ", ");
+            first = 0;
+            sb_put(&sb, fld->name);
         }
         sb_put(&sb, " } = _args;\n  const _self = { ");
+        first = 1;
         for (int i = 0; i < n->fields->count; i++) {
-            if (i) sb_put(&sb, ", ");
-            sb_put(&sb, ((Node*)n->fields->items[i])->name);
+            Node *fld = n->fields->items[i];
+            if (fld->is_computed) continue;
+            if (!first) sb_put(&sb, ", ");
+            first = 0;
+            sb_put(&sb, fld->name);
         }
         sb_put(&sb, " };\n");
     } else sb_put(&sb, "  const _self = {};\n");
@@ -917,6 +930,21 @@ static char *gen_struct(Node *n, Ctx *parent) {
         ctx_destroy_no_fields(&mctx);
     }
 
+    for (int i = 0; i < n->fields->count; i++) {
+        Node *fld = n->fields->items[i];
+        if (fld->is_computed) {
+            Ctx fctx = ctx_copy(parent);
+            ss_free(&fctx.fields); fctx.fields = members;
+            fctx.self_prefix = "this";
+
+            sb_printf(&sb, "  Object.defineProperty(_self, \"%s\", { get: function() {\n", fld->name);
+            char *b = block_returning(fld->body, &fctx);
+            sb_printf(&sb, "    %s\n  }});\n", b);
+            free(b);
+            ctx_destroy_no_fields(&fctx);
+        }
+    }
+
     int all_let = 1;
     for (int i = 0; i < n->fields->count; i++) {
         const char *sv = ((Node*)n->fields->items[i])->sval;
@@ -944,7 +972,12 @@ static char *gen_class(Node *n, Ctx *parent) {
     if (n->sval) sb_printf(&sb, " extends %s", n->sval);
     sb_put(&sb, " {\n");
 
-    if (!has_init && n->fields->count > 0) {
+    int real_field_count = 0;
+    for (int i = 0; i < n->fields->count; i++) {
+        if (!((Node*)n->fields->items[i])->is_computed) real_field_count++;
+    }
+
+    if (!has_init && real_field_count > 0) {
         Ctx mctx = ctx_copy(parent);
         ss_free(&mctx.fields); mctx.fields = members;
         mctx.self_prefix = "this";
@@ -991,6 +1024,7 @@ static char *gen_class(Node *n, Ctx *parent) {
         if (is_init) {
             for (int fi = 0; fi < n->fields->count; fi++) {
                 Node *fld = n->fields->items[fi];
+                if (fld->is_computed) continue;
                 if (fld->a) {
                     char *v = gen_expr(fld->a, &mctx);
                     sb_printf(&sb, "    this.%s = %s;\n", fld->name, v);
@@ -1001,6 +1035,21 @@ static char *gen_class(Node *n, Ctx *parent) {
         gen_stmts_with_defers(&sb, m->body, &mctx, "    ", !is_init);
         sb_put(&sb, "  }\n");
         ctx_destroy_no_fields(&mctx);
+    }
+
+    for (int i = 0; i < n->fields->count; i++) {
+        Node *fld = n->fields->items[i];
+        if (fld->is_computed) {
+            Ctx fctx = ctx_copy(parent);
+            ss_free(&fctx.fields); fctx.fields = members;
+            fctx.self_prefix = "this";
+
+            sb_printf(&sb, "  get %s() {\n", fld->name);
+            char *b = block_returning(fld->body, &fctx);
+            sb_printf(&sb, "    %s\n  }\n", b);
+            free(b);
+            ctx_destroy_no_fields(&fctx);
+        }
     }
 
     sb_put(&sb, "}");

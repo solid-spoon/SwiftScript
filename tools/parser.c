@@ -182,6 +182,7 @@ static Node *parse_try(P *p);
 static Node *parse_throw(P *p);
 static Node *parse_class(P *p);
 static Node *parse_init(P *p);
+static Node *parse_block(P *p);
 
 /* ---------- depth-guarded wrappers ---------- */
 
@@ -564,9 +565,16 @@ static Node *parse_struct(P *p) {
             fld->name = xstrdup(fid->value);
             fld->type = parse_type(p);
             fld->is_static = is_static;
-            if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
+            
+            if (check_op(p, "{")) {
+                fld->is_computed = 1;
+                Node *block = parse_block(p);
+                fld->body = block->stmts;
+            } else {
+                if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
+                match_op(p, ";");
+            }
             list_push(n->fields, fld);
-            match_op(p, ";");
         } else if (check_kw(p, "func")) {
             Node *m = parse_func(p);
             m->is_static = is_static;
@@ -678,8 +686,15 @@ static Node *parse_class(P *p) {
             fld->name = xstrdup(fid->value);
             fld->type = parse_type(p);
             fld->is_static = is_static;
-            if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
-            match_op(p, ";");
+            
+            if (check_op(p, "{")) {
+                fld->is_computed = 1;
+                Node *block = parse_block(p);
+                fld->body = block->stmts;
+            } else {
+                if (match_op(p, "=")) fld->a = parse_expr(p, 0, 0);
+                match_op(p, ";");
+            }
             list_push(n->fields, fld);
         } else if (check_kw(p, "init")) {
             Node *m = parse_init(p);

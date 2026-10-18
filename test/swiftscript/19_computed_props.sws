@@ -1,0 +1,24 @@
+struct Circle {
+    let radius: Double
+    var area: Double {
+        return 3.14159 * self.radius * self.radius
+    }
+}
+
+class Person {
+    let first: String
+    let last: String
+    var fullName: String {
+        return "\(self.first) \(self.last)"
+    }
+    init(first: String, last: String) {
+        self.first = first
+        self.last = last
+    }
+}
+
+let c = Circle(radius: 2.0)
+print(c.area)
+
+let p = Person(first: "John", last: "Doe")
+print(p.fullName)

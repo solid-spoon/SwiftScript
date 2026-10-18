@@ -31,6 +31,7 @@ struct Node {
     int is_async;
     int is_new;
     int is_static;
+    int is_computed;
 
     const char *name;
     const char *sval;
