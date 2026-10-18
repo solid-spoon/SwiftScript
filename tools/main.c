@@ -14,6 +14,7 @@
 #include "ast.h"
 #include "codegen.h"
 #include "runtime.h"
+#include "sourcemap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,6 +85,35 @@ static char *read_file(const char *path) {
      * silently truncate. For source files this is acceptable: racing
      * writers are undefined behaviour for any compiler. */
     return buf;
+}
+
+static void print_diagnostic(const char *path, int line, int col, const char *msg) {
+    fprintf(stderr, "\033[1;31merror\033[0m: %s\n", msg);
+    fprintf(stderr, "  \033[1;34m-->\033[0m %s:%d:%d\n", path, line, col);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    char buffer[1024];
+    int current_line = 1;
+    while (fgets(buffer, sizeof(buffer), f)) {
+        if (current_line == line) {
+            size_t len = strlen(buffer);
+            if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0';
+            
+            fprintf(stderr, "   \033[1;34m|\033[0m\n");
+            fprintf(stderr, "\033[1;34m%3d|\033[0m %s\n", line, buffer);
+            fprintf(stderr, "   \033[1;34m|\033[0m ");
+
+            for (int i = 1; i < col; i++) {
+                fprintf(stderr, " ");
+            }
+            fprintf(stderr, "\033[1;31m^\033[0m\n\n");
+            break;
+        }
+        current_line++;
+    }
+    fclose(f);
 }
 
 static int write_file(const char *path, const char *data) {
@@ -158,14 +188,14 @@ static Node *parse_file(const char *src_path, char **out_src) {
     SSError err = {0};
     TokenList *toks = tokenize(src, &err);
     if (!toks) {
-        fprintf(stderr, "%s:%d:%d: %s\n", src_path, err.line, err.col, err.msg);
+        print_diagnostic(src_path, err.line, err.col, err.msg);
         free(src);
         return NULL;
     }
     Node *ast = parse(toks, &err);
     free_tokens(toks);
     if (!ast) {
-        fprintf(stderr, "%s:%d:%d: %s\n", src_path, err.line, err.col, err.msg);
+        print_diagnostic(src_path, err.line, err.col, err.msg);
         free(src);
         return NULL;
     }
@@ -207,14 +237,24 @@ static int compile_file(const char *src_path, const char *out_path, int no_runti
 
     char *user_js = gen_program(ast);
     if (!user_js) {
-        fprintf(stderr, "%s:%d:%d: %s\n", src_path,
-                gen_error_line(), gen_error_col(), gen_error_msg());
+        print_diagnostic(src_path, gen_error_line(), gen_error_col(), gen_error_msg());
         free(src);
         return 1;
     }
 
     StrBuf out; sb_init(&out);
     build_output(&out, user_js, no_runtime, src_path);
+
+    char *map_json = gen_get_sourcemap(src_path); 
+    char map_path[MAXPATH];
+    snprintf(map_path, sizeof(map_path), "%s.map", out_path);
+    
+    write_file(map_path, map_json);
+    free(map_json);
+
+    const char *js_base = strrchr(out_path, '/');
+    js_base = js_base ? js_base + 1 : out_path;
+    sb_printf(&out, "\n//# sourceMappingURL=%s.map\n", js_base);
 
     /* create parent directory of out_path */
     char dir[MAXPATH];
@@ -241,8 +281,7 @@ static int check_file(const char *src_path) {
 
     char *user_js = gen_program(ast);
     if (!user_js) {
-        fprintf(stderr, "%s:%d:%d: %s\n", src_path,
-                gen_error_line(), gen_error_col(), gen_error_msg());
+        print_diagnostic(src_path, gen_error_line(), gen_error_col(), gen_error_msg());
         free(src);
         return 1;
     }

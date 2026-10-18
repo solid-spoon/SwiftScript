@@ -30,6 +30,8 @@ extern "C" {
  * supported; each call resets the internal counter and error state. */
 char *gen_program(Node *prog);
 
+char *gen_get_sourcemap(const char *source_file);
+
 /* Diagnostic accessors. Valid after gen_program() returns NULL. */
 int         gen_had_error(void);   /* 1 if an error was recorded     */
 const char *gen_error_msg(void);   /* NUL-terminated message         */

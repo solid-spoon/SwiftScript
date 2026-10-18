@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include "sourcemap.h"
+
+static SourceMap _sourcemap;
 
 static int _sw_counter = 0;
 static int _let_bind_counter = 0;
@@ -363,7 +366,9 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
     case N_GUARD_LET: return gen_guard_stmt(n, ctx);
     case N_BLOCK: {
         sb_put(&sb, "{\n");
-        gen_stmts_with_defers(&sb, n->stmts, ctx, "  ", 0);
+        Ctx block_ctx = ctx_copy(ctx);
+        gen_stmts_with_defers(&sb, n->stmts, &block_ctx, "  ", 0);
+        ctx_destroy(&block_ctx);
         sb_put(&sb, "}");
         break;
     }
@@ -1233,16 +1238,36 @@ static char *gen_template(Node *n, Ctx *ctx) {
 }
 
 char *gen_program(Node *prog) {
-    _sw_counter = 0; _let_bind_counter = 0;
+    _sw_counter = 0;
+    _let_bind_counter = 0;
     memset(&_gen, 0, sizeof(_gen));
+    sm_init(&_sourcemap);
+
     Ctx ctx; memset(&ctx, 0, sizeof(ctx));
     collect_decls(prog, &ctx);
+    
     StrBuf sb; sb_init(&sb);
+    int current_gen_line = 0;
+
     for (int i = 0; i < prog->stmts->count; i++) {
-        if (i) sb_putc(&sb, '\n');
-        char *s = gen_stmt(prog->stmts->items[i], &ctx);
-        sb_put(&sb, s); free(s);
+        Node *stmt = prog->stmts->items[i];
+
+        sm_add(&_sourcemap, current_gen_line, stmt->line, stmt->col);
+
+        char *s = gen_stmt(stmt, &ctx);
+        sb_put(&sb, s); 
+
+        for (char *p = s; *p; p++) {
+            if (*p == '\n') current_gen_line++;
+        }
+        free(s);
+        
+        if (i < prog->stmts->count - 1) {
+            sb_putc(&sb, '\n');
+            current_gen_line++;
+        }
     }
+
     ss_free(&ctx.globals); ss_free(&ctx.struct_names); ss_free(&ctx.class_names);
     ss_free(&ctx.locals); ss_free(&ctx.break_stack); ss_free(&ctx.fields);
     for (int i = 0; i < ctx.enum_case_count; i++) { free(ctx.enum_cases[i].k); free(ctx.enum_cases[i].v); }
@@ -1252,4 +1277,8 @@ char *gen_program(Node *prog) {
 
     if (_gen.has_err) { sb_free(&sb); return NULL; }
     return sb_take(&sb);
+}
+
+char *gen_get_sourcemap(const char *source_file) {
+    return sm_generate_json(&_sourcemap, source_file);
 }
