@@ -239,6 +239,7 @@ class HoverProvider {
             "extension": "Adds methods to an existing struct or class.",
             "guard": "Early exit. `else` must terminate (return / throw / break / continue).",
             "switch": "Pattern matching. Supports enum cases, ranges (`400...499`), `where`.",
+            "multiline": "Multi-line strings use `\"\"\"` and automatically dedent.",
             "async": "Marks a function as async (returns Promise).",
             "await": "Suspends until the Promise resolves.",
             "try": "Wraps code that may throw. Paired with `catch`.",

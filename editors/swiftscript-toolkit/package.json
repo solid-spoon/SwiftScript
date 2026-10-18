@@ -10,19 +10,34 @@
     "type": "git",
     "url": "https://github.com/solid-spoon/SwiftScript"
   },
-  "engines": { "vscode": "^1.75.0" },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
   "main": "./out/extension.js",
   "type": "module",
-  "activationEvents": ["onLanguage:swiftscript"],
-  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:swiftscript"
+  ],
+  "categories": [
+    "Programming Languages"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "swiftscript",
-        "aliases": ["SwiftScript", "swiftscript", "sws"],
-        "extensions": [".sws"],
+        "aliases": [
+          "SwiftScript",
+          "swiftscript",
+          "sws"
+        ],
+        "extensions": [
+          ".sws"
+        ],
         "configuration": "./language-configuration.json",
-        "icon": { "light": "icon.png", "dark": "icon.png" }
+        "icon": {
+          "light": "icon.png",
+          "dark": "icon.png"
+        }
       }
     ],
     "grammars": [

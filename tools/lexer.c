@@ -206,11 +206,30 @@ TokenList *tokenize(const char *src, SSError *err) {
             continue;
         }
 
-        if (c == '"') {
-            char q = c;
-            ADV(1);
+                if (c == '"') {
+            int is_multiline = 0;
+            if (i + 2 < n && src[i+1] == '"' && src[i+2] == '"') {
+                is_multiline = 1;
+                ADV(3);
+            } else {
+                ADV(1);
+            }
+
             StrBuf sb; sb_init(&sb);
-            while (i < n && src[i] != q) {
+            int terminated = 0;
+
+            while (i < n) {
+                if (is_multiline && src[i] == '"' && i + 2 < n && src[i+1] == '"' && src[i+2] == '"') {
+                    ADV(3);
+                    terminated = 1;
+                    break;
+                }
+                if (!is_multiline && src[i] == '"') {
+                    ADV(1);
+                    terminated = 1;
+                    break;
+                }
+
                 if (src[i] == '\\' && i + 1 < n) {
                     sb_putc(&sb, src[i]);
                     sb_putc(&sb, src[i+1]);
@@ -220,15 +239,71 @@ TokenList *tokenize(const char *src, SSError *err) {
                     ADV(1);
                 }
             }
-            if (i >= n) {
+
+            if (!terminated) {
                 if (err) { err->line = sl; err->col = sc;
                     snprintf(err->msg, sizeof(err->msg), "Unterminated string"); }
                 sb_free(&sb);
                 free_tokens(toks);
                 return NULL;
             }
-            ADV(1);
-            tl_push(toks, T_STR, sb_take(&sb), 0, sl, sc);
+
+            char *raw_str = sb_take(&sb);
+
+            if (is_multiline) {
+                char *start = raw_str;
+                if (*start == '\n') start++;
+                else if (*start == '\r' && start[1] == '\n') start += 2;
+                else if (*start == '\r') start++;
+
+                size_t len = strlen(start);
+                while (len > 0 && (start[len-1] == ' ' || start[len-1] == '\t' || start[len-1] == '\r')) len--;
+                if (len > 0 && start[len-1] == '\n') {
+                    len--;
+                    while (len > 0 && (start[len-1] == ' ' || start[len-1] == '\t' || start[len-1] == '\r')) len--;
+                }
+                start[len] = '\0';
+
+                int min_indent = 9999;
+                int current_indent = 0;
+                int in_indent = 1;
+                int has_content = 0;
+                for (size_t j = 0; j < len; j++) {
+                    if (start[j] == '\n') {
+                        if (has_content && current_indent < min_indent) min_indent = current_indent;
+                        in_indent = 1;
+                        current_indent = 0;
+                        has_content = 0;
+                    } else if (in_indent && (start[j] == ' ' || start[j] == '\t')) {
+                        current_indent++;
+                    } else {
+                        in_indent = 0;
+                        has_content = 1;
+                    }
+                }
+                if (has_content && current_indent < min_indent) min_indent = current_indent;
+                if (min_indent == 9999) min_indent = 0;
+
+                StrBuf dedented; sb_init(&dedented);
+                in_indent = 1;
+                int to_skip = 0;
+                for (size_t j = 0; j < len; j++) {
+                    if (start[j] == '\n') {
+                        sb_putc(&dedented, '\n');
+                        in_indent = 1;
+                        to_skip = 0;
+                    } else if (in_indent && to_skip < min_indent && (start[j] == ' ' || start[j] == '\t')) {
+                        to_skip++;
+                    } else {
+                        in_indent = 0;
+                        sb_putc(&dedented, start[j]);
+                    }
+                }
+                free(raw_str);
+                tl_push(toks, T_STR, sb_take(&dedented), 0, sl, sc);
+            } else {
+                tl_push(toks, T_STR, raw_str, 0, sl, sc);
+            }
             continue;
         }
 

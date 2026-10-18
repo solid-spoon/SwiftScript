@@ -3,15 +3,33 @@
   "name": "SwiftScript",
   "scopeName": "source.swiftscript",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#strings" },
-    { "include": "#numbers" },
-    { "include": "#declarations" },
-    { "include": "#keywords" },
-    { "include": "#types" },
-    { "include": "#enum-cases" },
-    { "include": "#builtins" },
-    { "include": "#operators" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#enum-cases"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#operators"
+    }
   ],
   "repository": {
     "comments": {
@@ -37,12 +55,29 @@
     "strings": {
       "patterns": [
         {
+          "name": "string.quoted.double.multiline.swiftscript",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            {
+              "include": "#string-escapes"
+            },
+            {
+              "include": "#string-interpolation"
+            }
+          ]
+        },
+        {
           "name": "string.quoted.double.swiftscript",
           "begin": "\"",
           "end": "\"",
           "patterns": [
-            { "include": "#string-escapes" },
-            { "include": "#string-interpolation" }
+            {
+              "include": "#string-escapes"
+            },
+            {
+              "include": "#string-interpolation"
+            }
           ]
         }
       ]
@@ -59,13 +94,21 @@
       "name": "meta.embedded.line.swiftscript",
       "begin": "\\\\\\(",
       "beginCaptures": {
-        "0": { "name": "punctuation.section.embedded.begin.swiftscript" }
+        "0": {
+          "name": "punctuation.section.embedded.begin.swiftscript"
+        }
       },
       "end": "\\)",
       "endCaptures": {
-        "0": { "name": "punctuation.section.embedded.end.swiftscript" }
+        "0": {
+          "name": "punctuation.section.embedded.end.swiftscript"
+        }
       },
-      "patterns": [{ "include": "source.swiftscript" }]
+      "patterns": [
+        {
+          "include": "source.swiftscript"
+        }
+      ]
     },
     "numbers": {
       "patterns": [
@@ -93,56 +136,84 @@
           "name": "meta.function.swiftscript",
           "match": "\\b(func)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "storage.type.function.swiftscript" },
-            "2": { "name": "entity.name.function.swiftscript" }
+            "1": {
+              "name": "storage.type.function.swiftscript"
+            },
+            "2": {
+              "name": "entity.name.function.swiftscript"
+            }
           }
         },
         {
           "name": "meta.struct.swiftscript",
           "match": "\\b(struct)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "storage.type.struct.swiftscript" },
-            "2": { "name": "entity.name.type.struct.swiftscript" }
+            "1": {
+              "name": "storage.type.struct.swiftscript"
+            },
+            "2": {
+              "name": "entity.name.type.struct.swiftscript"
+            }
           }
         },
         {
           "name": "meta.enum.swiftscript",
           "match": "\\b(enum)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "storage.type.enum.swiftscript" },
-            "2": { "name": "entity.name.type.enum.swiftscript" }
+            "1": {
+              "name": "storage.type.enum.swiftscript"
+            },
+            "2": {
+              "name": "entity.name.type.enum.swiftscript"
+            }
           }
         },
         {
           "name": "meta.class.swiftscript",
           "match": "\\b(class)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "storage.type.class.swiftscript" },
-            "2": { "name": "entity.name.type.class.swiftscript" }
+            "1": {
+              "name": "storage.type.class.swiftscript"
+            },
+            "2": {
+              "name": "entity.name.type.class.swiftscript"
+            }
           }
         },
         {
           "name": "meta.extension.swiftscript",
           "match": "\\b(extension)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "storage.type.extension.swiftscript" },
-            "2": { "name": "entity.name.type.extension.swiftscript" }
+            "1": {
+              "name": "storage.type.extension.swiftscript"
+            },
+            "2": {
+              "name": "entity.name.type.extension.swiftscript"
+            }
           }
         },
         {
           "name": "meta.enum-case.swiftscript",
           "match": "\\b(case)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "keyword.control.case.swiftscript" },
-            "2": { "name": "entity.name.type.enum-case.swiftscript" }
+            "1": {
+              "name": "keyword.control.case.swiftscript"
+            },
+            "2": {
+              "name": "entity.name.type.enum-case.swiftscript"
+            }
           }
         },
         {
           "name": "meta.var-declaration.swiftscript",
           "match": "\\b(let|var)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)",
           "captures": {
-            "1": { "name": "storage.type.binding.swiftscript" },
-            "2": { "name": "variable.other.declaration.swiftscript" }
+            "1": {
+              "name": "storage.type.binding.swiftscript"
+            },
+            "2": {
+              "name": "variable.other.declaration.swiftscript"
+            }
           }
         }
       ]

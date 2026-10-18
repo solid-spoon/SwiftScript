@@ -1,0 +1,20 @@
+let text = """
+Hello,
+World!
+"""
+print(text)
+
+let json = """
+{
+    "name": "SwiftScript",
+    "version": "1.0"
+}
+"""
+print(json)
+
+let name = "Alice"
+let template = """
+Hello \(name),
+Welcome to SwiftScript!
+"""
+print(template)
