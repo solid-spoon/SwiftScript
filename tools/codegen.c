@@ -1046,7 +1046,16 @@ static char *gen_expr(Node *n, Ctx *ctx) {
     }
     case N_UNARY: {
         char *a = gen_expr(n->a, ctx);
-        sb_printf(&sb, "(%s%s)", n->op, a); free(a);
+        if (strcmp(n->op, "try?") == 0) {
+            sb_printf(&sb, "(() => { try { return %s; } catch { return null; } })()", a);
+        } else if (strcmp(n->op, "try!") == 0) {
+            sb_printf(&sb, "(() => { try { return %s; } catch (e) { throw e; } })()", a);
+        } else if (strcmp(n->op, "try") == 0) {
+            sb_printf(&sb, "(%s)", a);
+        } else {
+            sb_printf(&sb, "(%s%s)", n->op, a);
+        }
+        free(a);
         return sb_take(&sb);
     }
     case N_BIN: {

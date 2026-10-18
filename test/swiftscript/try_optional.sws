@@ -1,0 +1,13 @@
+func mightFail(_ x: Int) throws -> Int {
+    if x < 0 {
+        throw "negative"
+    }
+    return x * 2
+}
+
+let a = try? mightFail(5)   // 10
+let b = try? mightFail(-1)  // nil
+let c = try! mightFail(7)   // 14
+print("a = \(a)")
+print("b = \(b)")
+print("c = \(c)")

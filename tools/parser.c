@@ -807,7 +807,11 @@ static Node *parse_throw(P *p) {
 static Node *parse_stmt(P *p) {
     if (check_kw(p, "import")) return parse_import(p);
     if (check_kw(p, "export")) return parse_export(p);
-    if (check_kw(p, "try"))   return parse_try(p);
+    if (check_kw(p, "try")) {
+        if (peek(p, 1)->type == T_OP && peek(p, 1)->value && strcmp(peek(p, 1)->value, "{") == 0) {
+            return parse_try(p);
+        }
+    }
     if (check_kw(p, "throw")) return parse_throw(p);
 
     int is_static = 0, is_async = 0;
@@ -1230,6 +1234,15 @@ static Node *parse_unary(P *p, int no_trailing) {
         next_tok(p);
         Node *n = node_new(N_UNARY, t->line, t->col);
         n->op = xstrdup(t->value);
+        n->a = parse_unary(p, no_trailing);
+        return n;
+    }
+    if (check_kw(p, "try")) {
+        Token *kw = next_tok(p);
+        int is_opt = match_op(p, "?");
+        int is_force = match_op(p, "!");
+        Node *n = node_new(N_UNARY, kw->line, kw->col);
+        n->op = xstrdup(is_opt ? "try?" : (is_force ? "try!" : "try"));
         n->a = parse_unary(p, no_trailing);
         return n;
     }
