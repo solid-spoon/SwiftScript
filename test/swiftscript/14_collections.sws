@@ -1,0 +1,9 @@
+let arr = [10, 20, 30]
+print(String(arr))
+
+let d = ["name": "Alice", "age": 30]
+print(d.name)
+print(d.age)
+
+let t = (1, 2)
+print(String(t))

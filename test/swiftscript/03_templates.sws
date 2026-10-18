@@ -1,0 +1,8 @@
+let name = "World"
+print("Hello, \(name)!")
+
+let x = 42
+print("x = \(x)")
+
+let greeting = "Hi"
+print("\(greeting), \(name)")

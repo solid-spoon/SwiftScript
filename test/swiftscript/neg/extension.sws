@@ -1,0 +1,2 @@
+// EXPECT_ERROR: 'extension' is not yet implemented
+extension Foo { }

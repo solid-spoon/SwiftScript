@@ -1,0 +1,26 @@
+class Animal {
+    let name: String
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func describe() -> String {
+        return "Animal: \(self.name)"
+    }
+}
+
+class Dog extends Animal {
+    init(name: String) {
+        super.init(name: name)
+    }
+
+    func speak() -> String {
+        return "Woof!"
+    }
+}
+
+let d = Dog(name: "Rex")
+print(d.speak())
+print(d.name)
+print(d.describe())

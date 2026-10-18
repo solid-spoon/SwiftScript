@@ -1,0 +1,31 @@
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+enum Shape {
+    case circle(radius: Double)
+    case square(side: Double)
+    case point
+}
+
+let c = Color.green
+switch c {
+case .red:
+    print("red")
+case .green:
+    print("green")
+case .blue:
+    print("blue")
+}
+
+let s = Shape.circle(radius: 2.5)
+switch s {
+case .circle(let r):
+    print("circle \(r)")
+case .square(let side):
+    print("square \(side)")
+case .point:
+    print("point")
+}

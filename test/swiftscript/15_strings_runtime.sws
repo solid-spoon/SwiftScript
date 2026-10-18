@@ -1,0 +1,6 @@
+print(String(42))
+print(String(3.14))
+print(String(true))
+print(String(false))
+print(String(nil))
+print(String("hello"))

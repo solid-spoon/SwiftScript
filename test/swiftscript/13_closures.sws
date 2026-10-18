@@ -1,0 +1,8 @@
+let nums = [1, 2, 3, 4, 5]
+print(String(nums.map { $0 * 2 }))
+print(String(nums.filter { $0 % 2 == 0 }))
+
+func apply(f, x) {
+    return f(x)
+}
+print(apply({ $0 + 1 }, 10))

@@ -1,0 +1,4 @@
+// EXPECT_ERROR: 'defer' is not yet implemented
+func foo() {
+    defer { print("cleanup") }
+}

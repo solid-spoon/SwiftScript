@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
+# Golden test runner for swsc.
+#
+# Usage:
+#   ./test/run.sh              run tests, compare with golden files
+#   ./test/run.sh --update     regenerate golden files from current output
+#   ./test/run.sh -u           same as --update
+#
+# Layout:
+#   test/swiftscript/*.sws         positive tests, expected stdout in
+#                                  test/golden/<name>.out
+#   test/swiftscript/neg/*.sws     negative tests, must fail check;
+#                                  expected substring of stderr in
+#                                  "// EXPECT_ERROR: ..." header comment
 
-# Build the compiler first
+set -euo pipefail
+
 if ! ./build.sh > /dev/null; then
     echo "❌ Build failed!"
     exit 1
@@ -9,62 +23,116 @@ fi
 GOLDEN_DIR="test/golden"
 mkdir -p "$GOLDEN_DIR"
 
+UPDATE=0
+case "${1:-}" in
+    -u|--update) UPDATE=1 ;;
+esac
+
 FAILED=0
+PASSED=0
 
-run_test() {
-    local src_file="$1"
-    local base_name=$(basename "$src_file" .sws)
-    local expected_out="$GOLDEN_DIR/${base_name}.out"
-    
-    echo "▶ Testing $src_file"
-    
-    # 1. Check syntax/codegen
-    if ! ./swsc check "$src_file" > /dev/null 2>&1; then
-        echo "  ❌ FAIL: check failed (syntax/codegen error)"
-        FAILED=1
+run_positive() {
+    local src="$1"
+    local name
+    name=$(basename "$src" .sws)
+    local golden="$GOLDEN_DIR/${name}.out"
+
+    echo "▶ $src"
+
+    if ! ./swsc check "$src" > /dev/null 2>&1; then
+        echo "  ❌ FAIL: check"
+        ./swsc check "$src" 2>&1 | sed 's/^/       /'
+        FAILED=$((FAILED + 1))
         return
     fi
 
-    # 2. Run and capture output
-    local actual_out
-    actual_out=$(./swsc run "$src_file" 2>&1)
-    local exit_code=$?
+    local out
+    local code=0
+    out=$(./swsc run "$src" 2>&1) || code=$?
 
-    if [ $exit_code -ne 0 ]; then
-        echo "  ❌ FAIL: runtime error (exit code $exit_code)"
-        echo "$actual_out"
-        FAILED=1
+    if [ $code -ne 0 ]; then
+        echo "  ❌ FAIL: runtime (exit $code)"
+        echo "$out" | sed 's/^/       /'
+        FAILED=$((FAILED + 1))
         return
     fi
-    
-    # 3. Diff
-    if [ ! -f "$expected_out" ]; then
-        echo "  ⚠️  Missing golden file. Creating $expected_out"
-        echo "$actual_out" > "$expected_out"
-    else
-        if ! diff -u "$expected_out" <(echo "$actual_out"); then
-            echo "  ❌ FAIL: output mismatch"
-            FAILED=1
+
+    if [ $UPDATE -eq 1 ] || [ ! -f "$golden" ]; then
+        echo "$out" > "$golden"
+        if [ $UPDATE -eq 1 ]; then
+            echo "  📝 UPDATED"
         else
-            echo "  ✅ PASS"
+            echo "  ⚠️  CREATED $golden"
         fi
+        PASSED=$((PASSED + 1))
+        return
     fi
+
+    local diff_file
+    diff_file=$(mktemp)
+    if diff -u "$golden" <(printf '%s\n' "$out") > "$diff_file"; then
+        echo "  ✅ PASS"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  ❌ FAIL: output mismatch"
+        sed 's/^/       /' "$diff_file" | head -40
+        FAILED=$((FAILED + 1))
+    fi
+    rm -f "$diff_file"
 }
 
-# Test examples
+run_negative() {
+    local src="$1"
+    echo "▶ $src (negative)"
+
+    local expected
+    expected=$(grep -o 'EXPECT_ERROR:.*' "$src" 2>/dev/null | head -1 | sed 's/EXPECT_ERROR: *//' || true)
+
+    local code=0
+    local errout
+    errout=$(./swsc check "$src" 2>&1) || code=$?
+
+    if [ $code -eq 0 ]; then
+        echo "  ❌ FAIL: expected error, got success"
+        FAILED=$((FAILED + 1))
+        return
+    fi
+
+    if [ -n "$expected" ] && ! echo "$errout" | grep -qF -- "$expected"; then
+        echo "  ❌ FAIL: error message mismatch"
+        echo "  Expected stderr to contain: $expected"
+        echo "  Actual:"
+        echo "$errout" | sed 's/^/       /'
+        FAILED=$((FAILED + 1))
+        return
+    fi
+
+    echo "  ✅ PASS"
+    PASSED=$((PASSED + 1))
+}
+
+# ── examples (pre-existing) ───────────────────────────────────────────
 for f in examples/bank/bank.sws examples/todos/todo.sws; do
-    [ -f "$f" ] && run_test "$f"
+    [ -f "$f" ] && run_positive "$f"
 done
 
-# Test example sws
+# ── positive ──────────────────────────────────────────────────────────
 for f in test/swiftscript/*.sws; do
-    [ -f "$f" ] && run_test "$f"
+    [ -f "$f" ] && run_positive "$f"
 done
 
+# ── negative ──────────────────────────────────────────────────────────
+if [ -d test/swiftscript/neg ]; then
+    for f in test/swiftscript/neg/*.sws; do
+        [ -f "$f" ] && run_negative "$f"
+    done
+fi
+
+echo ""
 if [ $FAILED -eq 0 ]; then
-    echo -e "\n🎉 All tests passed!"
+    echo "🎉 All tests passed! ($PASSED total)"
     exit 0
 else
-    echo -e "\n💥 Some tests failed."
+    echo "💥 $FAILED failed, $PASSED passed"
     exit 1
 fi

@@ -1,0 +1,19 @@
+let x = 5
+
+if x > 3 {
+    print("big")
+} else {
+    print("small")
+}
+
+if x == 5 {
+    print("five")
+}
+
+if x < 0 {
+    print("neg")
+} else if x == 5 {
+    print("five-again")
+} else {
+    print("other")
+}

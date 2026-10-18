@@ -1,0 +1,21 @@
+func check(n: Int) -> String {
+    guard n > 0 else {
+        return "non-positive"
+    }
+    return "positive"
+}
+
+func checkPositive(n: Int) -> String {
+    guard n > 0 else {
+        return "non-positive"
+    }
+    guard n < 100 else {
+        return "too big"
+    }
+    return "ok"
+}
+
+print(check(5))
+print(check(-1))
+print(checkPositive(50))
+print(checkPositive(200))

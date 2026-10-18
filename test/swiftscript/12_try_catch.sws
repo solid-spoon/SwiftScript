@@ -1,0 +1,15 @@
+func risky(n: Int) -> Int {
+    if n < 0 {
+        throw "negative"
+    }
+    return n * 2
+}
+
+try {
+    print(risky(5))
+    print(risky(-1))
+} catch e {
+    print("error: \(e)")
+}
+
+print("done")

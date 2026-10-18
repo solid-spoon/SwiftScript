@@ -1,0 +1,17 @@
+let x: Int? = nil
+if let v = x {
+    print("have \(v)")
+} else {
+    print("nothing")
+}
+
+let y: Int? = 42
+if let v = y {
+    print("have \(v)")
+}
+
+let z = x ?? 0
+print(z)
+
+let w = y ?? 100
+print(w)

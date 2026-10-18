@@ -1,0 +1,17 @@
+func classify(n: Int) -> String {
+    switch n {
+    case 0:
+        return "zero"
+    case 1..<10:
+        return "small"
+    case 10..<100:
+        return "medium"
+    default:
+        return "large"
+    }
+}
+
+print(classify(0))
+print(classify(5))
+print(classify(50))
+print(classify(500))

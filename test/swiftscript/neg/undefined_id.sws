@@ -1,0 +1,2 @@
+// EXPECT_ERROR: Undefined identifier
+print(undefined_thing)

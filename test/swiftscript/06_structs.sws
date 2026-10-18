@@ -1,0 +1,12 @@
+struct Point {
+    let x: Int
+    let y: Int
+
+    func sum() -> Int {
+        return self.x + self.y
+    }
+}
+
+let p = Point(x: 3, y: 4)
+print(p.sum())
+print(p.x)
