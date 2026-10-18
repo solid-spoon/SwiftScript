@@ -1,0 +1,19 @@
+enum Shape {
+    case circle(radius: Double)
+    case square(side: Double)
+}
+
+func describe(_ s: Shape) -> String {
+    if case .circle(let r) = s {
+        return "Circle with radius \(r)"
+    }
+    
+    guard case .square(let side) = s else {
+        return "Unknown"
+    }
+    
+    return "Square with side \(side)"
+}
+
+print(describe(.circle(radius: 5.0)))
+print(describe(.square(side: 10.0)))

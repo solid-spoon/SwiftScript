@@ -152,6 +152,8 @@ static char *gen_closure(Node *n, Ctx *ctx);
 static char *gen_template(Node *n, Ctx *ctx);
 static char *gen_if_expr(Node *n, Ctx *ctx);
 static char *gen_pattern(Node *p, const char *subj, Ctx *ctx, BindingList *bindings);
+static char *gen_if_case(Node *n, Ctx *ctx);
+static char *gen_guard_case(Node *n, Ctx *ctx);
 
 static void collect_decls(Node *prog, Ctx *ctx) {
     for (int i = 0; i < prog->stmts->count; i++) {
@@ -375,10 +377,12 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
         if (!n->a) { codegen_error(n->line, n->col, "empty expression statement"); break; }
         if (n->a->kind == N_IF)      return gen_if_stmt(n->a, ctx);
         if (n->a->kind == N_IF_LET)  return gen_if_let_stmt(n->a, ctx);
+        if (n->a->kind == N_IF_CASE) return gen_if_case(n->a, ctx);
         if (n->a->kind == N_SWITCH)  return gen_switch(n->a, ctx);
         { char *e = gen_expr(n->a, ctx); sb_printf(&sb, "%s;", e); free(e); }
         break;
     case N_GUARD_LET: return gen_guard_stmt(n, ctx);
+    case N_GUARD_CASE: return gen_guard_case(n, ctx);
     case N_BLOCK: {
         sb_put(&sb, "{\n");
         Ctx block_ctx = ctx_copy(ctx);
@@ -454,6 +458,79 @@ static char *gen_stmt(Node *n, Ctx *ctx) {
         codegen_error(n->line, n->col, "codegen: unknown statement kind %d", n->kind);
         sb_printf(&sb, "/* codegen error */");
     }
+    return sb_take(&sb);
+}
+
+static char *gen_if_case(Node *n, Ctx *ctx) {
+    int id = ++_sw_counter;
+    char subj[32]; snprintf(subj, sizeof(subj), "_cs%d", id);
+
+    StrBuf sb; sb_init(&sb);
+    sb_printf(&sb, "{\n  const %s = ", subj);
+    char *s_expr = gen_expr(n->b, ctx);
+    sb_printf(&sb, "%s;\n", s_expr);
+    free(s_expr);
+
+    BindingList bl = {0};
+    char *cond = gen_pattern(n->a, subj, ctx, &bl);
+    
+    sb_printf(&sb, "  if (%s) {\n", cond);
+    for (int i = 0; i < bl.count; i++) {
+        sb_printf(&sb, "    %s\n", bl.items[i]);
+    }
+    
+    Ctx inner = ctx_copy(ctx);
+    for (int i = 0; i < bl.count; i++) {
+        const char *ns = bl.items[i];
+        if (strncmp(ns, "const ", 6) == 0) ns += 6;
+        const char *ne = ns;
+        while (*ne && *ne != ' ' && *ne != '=') ne++;
+        char *namebuf = xstrndup(ns, (size_t)(ne - ns));
+        ss_add(&inner.locals, namebuf);
+        free(namebuf);
+    }
+
+    char *body = gen_stmt(n->c, &inner);
+    sb_printf(&sb, "    %s\n  }\n}", body);
+
+    free(cond); free(body);
+    bl_clear(&bl);
+    ctx_destroy(&inner);
+    return sb_take(&sb);
+}
+
+static char *gen_guard_case(Node *n, Ctx *ctx) {
+    int id = ++_sw_counter;
+    char subj[32]; snprintf(subj, sizeof(subj), "_gs%d", id);
+
+    StrBuf sb; sb_init(&sb);
+    sb_printf(&sb, "const %s = ", subj);
+    char *s_expr = gen_expr(n->b, ctx);
+    sb_printf(&sb, "%s;\n", s_expr);
+    free(s_expr);
+
+    BindingList bl = {0};
+    char *cond = gen_pattern(n->a, subj, ctx, &bl);
+    
+    sb_printf(&sb, "if (!(%s)) ", cond);
+    char *else_code = gen_stmt(n->c, ctx);
+    sb_printf(&sb, "%s\n", else_code);
+
+    for (int i = 0; i < bl.count; i++) {
+        const char *ns = bl.items[i];
+        if (strncmp(ns, "const ", 6) == 0) ns += 6;
+        const char *ne = ns;
+        while (*ne && *ne != ' ' && *ne != '=') ne++;
+        char *namebuf = xstrndup(ns, (size_t)(ne - ns));
+
+        sb_printf(&sb, "%s\n", bl.items[i]);
+
+        ss_add(&ctx->locals, namebuf); 
+        free(namebuf);
+    }
+
+    free(cond); free(else_code);
+    bl_clear(&bl);
     return sb_take(&sb);
 }
 
@@ -582,7 +659,11 @@ static int block_terminates(List *stmts) {
     if (!stmts || stmts->count == 0) return 0;
     Node *last = stmts->items[stmts->count - 1];
     switch (last->kind) {
-    case N_RETURN: case N_THROW: case N_BREAK: case N_CONTINUE: return 1;
+    case N_RETURN:
+    case N_THROW:
+    case N_BREAK:
+    case N_CONTINUE:
+        return 1;
     case N_EXPR_STMT: {
         if (!last->a) return 0;
         Node *e = last->a;

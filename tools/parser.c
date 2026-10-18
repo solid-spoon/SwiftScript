@@ -919,6 +919,18 @@ static void parse_let_cond_list(P *p, Node *n) {
 static Node *parse_if(P *p) {
     Token *kw = expect_kw(p, "if");
 
+    if (match_kw(p, "case")) {
+        Node *n = node_new(N_IF_CASE, kw->line, kw->col);
+        n->a = parse_pattern(p);
+        expect_op(p, "=");
+        n->b = parse_expr(p, 0, 1);
+        n->c = parse_block(p);
+        if (match_kw(p, "else")) {
+            p_err(p, kw->line, kw->col, "else in if case is not supported yet");
+        }
+        return n;
+    }
+
     if (check_kw(p, "let") || check_kw(p, "var")) {
         Node *n = node_new(N_IF_LET, kw->line, kw->col);
         parse_let_cond_list(p, n);
@@ -942,6 +954,17 @@ static Node *parse_if(P *p) {
 
 static Node *parse_guard(P *p) {
     Token *kw = expect_kw(p, "guard");
+
+    if (match_kw(p, "case")) {
+        Node *n = node_new(N_GUARD_CASE, kw->line, kw->col);
+        n->a = parse_pattern(p);
+        expect_op(p, "=");
+        n->b = parse_expr(p, 0, 1);
+        expect_kw(p, "else");
+        n->c = parse_block(p);
+        return n;
+    }
+
     Node *n = node_new(N_GUARD_LET, kw->line, kw->col);
     parse_let_cond_list(p, n);
     expect_kw(p, "else");

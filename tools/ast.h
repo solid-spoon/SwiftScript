@@ -13,7 +13,8 @@ typedef enum {
     N_PAT_WILD,    N_PROGRAM,    N_RETURN,    N_STRUCT,    N_SWITCH,    N_SWITCH_CASE,
     N_TEMPLATE,    N_TEMPLATE_PART,    N_TERNARY,    N_THROW,    N_TRY,    N_TUPLE,
     N_TYPE_ARRAY,    N_TYPE_NAMED,    N_TYPE_OPT,    N_TYPE_TUPLE,    N_UNARY,    N_WHILE,
-    N_EXTENSION,   N_DEFER
+    N_EXTENSION,   N_DEFER,
+    N_IF_CASE,     N_GUARD_CASE
 } NodeKind;
 
 typedef struct Node Node;
