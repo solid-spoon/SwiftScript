@@ -122,6 +122,7 @@ flags_strict() {
         -Wimplicit-fallthrough
         -Wswitch-bool
         -Wno-unused-parameter
+        -Wno-newline-eof
     )
     printf '%s\n' "${f[@]}"
 }
@@ -180,6 +181,7 @@ flags_harden() {
                 -D_FORTIFY_SOURCE=2
                 -fstack-protector-strong
                 -fPIE -pie
+                -Qunused-arguments
             )
             printf '%s\n' "${f[@]}"
             ;;
@@ -202,10 +204,14 @@ preflight() {
     (( missing == 0 )) || exit 2
 
     # Smoke-test the compiler. Catches CC=clang-99-style typos.
+    # Portable: uses a temp file instead of /dev/null so it works on MSYS2.
+    local smoke_bin="$ROOT/.swsc-smoke-test"
     if ! printf 'int main(void){return 0;}\n' \
-            | "$CC_BIN" -x c - -o /dev/null 2>/dev/null; then
+            | "$CC_BIN" -x c - -o "$smoke_bin" 2>/dev/null; then
+        rm -f "$smoke_bin"
         die "$CC_BIN does not produce working binaries"
     fi
+    rm -f "$smoke_bin"
 }
 
 # ---------- execution ----------
