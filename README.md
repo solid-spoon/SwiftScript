@@ -176,7 +176,7 @@ editors/
 examples/
   bank.sws           classes, inheritance, throws, optionals
   todos/todo.sws     enums, structs, closures
-  tetris/            A TETR.IO-style Tetris clone using HTML5 Canvas
+  tetris/            A Tetris using HTML5 Canvas
 ```
 
 ## How it compiles
@@ -221,6 +221,21 @@ Later:
 - Raw strings
 
 See [`docs/*.md`](docs/) for the full aspirational spec. The docs lie in the right direction — the code is what actually runs.
+
+## Experimental: C backend
+
+> ⚠️ **This is a research artifact, not a supported target.**
+>
+> As a proof-of-concept, `swsc` can also emit portable C11. It shares
+> 100% of the frontend (lexer, parser, typechecker) with the JS backend.
+>
+> **Status**: ~65% feature parity. Missing: classes with inheritance,
+> closures with captures, multi-file imports, computed properties,
+> protocol conformance. Not tested in CI. Do not use in production.
+>
+> The C backend exists to demonstrate that the frontend is reusable
+> and to keep the door open for future native/WASM work.
+>
 
 ## Contributing
 

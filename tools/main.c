@@ -16,6 +16,8 @@
 #include "runtime.h"
 #include "sourcemap.h"
 #include "typecheck.h"
+//    -- This is a research artifact, not a supported target.
+// #include "codegen_c.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -298,6 +300,61 @@ static int compile_file(const char *src_path, const char *out_path, int no_runti
     free(src);
     return rc ? 1 : 0;
 }
+
+//    -- This is a research artifact, not a supported target.
+// static int compile_file_c(const char *src_path, const char *out_path, int to_native) {
+//     char *src;
+//     Node *ast = parse_file(src_path, &src);
+//     if (!ast) return 1;
+//
+//     if (!typecheck_program(ast)) {
+//         print_diagnostic(src_path, tc_error_line(), tc_error_col(), tc_error_msg());
+//         free(src);
+//         return 1;
+//     }
+//
+//     char *c_code = gen_c_program(ast);
+//     if (!c_code) {
+//         print_diagnostic(src_path, gen_c_error_line(), gen_c_error_col(), gen_c_error_msg());
+//         free(src);
+//         return 1;
+//     }
+//
+//     char c_path[MAXPATH];
+//     if (to_native) {
+//         snprintf(c_path, sizeof(c_path), "/tmp/swsc-%d.c", (int)getpid());
+//     } else {
+//         snprintf(c_path, sizeof(c_path), "%s", out_path);
+//         size_t n = strlen(c_path);
+//         if (n < 2 || strcmp(c_path + n - 2, ".c") != 0) {
+//             strncat(c_path, ".c", sizeof(c_path) - n - 1);
+//         }
+//     }
+//
+//     if (write_file(c_path, c_code) != 0) {
+//         fprintf(stderr, "swsc: cannot write %s\n", c_path);
+//         free(c_code); free(src);
+//         return 1;
+//     }
+//
+//     int rc = 0;
+//     if (to_native) {
+//         char cmd[MAXPATH * 4];
+//         snprintf(cmd, sizeof(cmd), "gcc -O2 -I tools -o \"%s\" \"%s\" tools/sws_rt.c -lm", out_path, c_path);
+//         int sys_rc = system(cmd);
+//         if (sys_rc != 0) {
+//             fprintf(stderr, "swsc: gcc failed (exit %d)\n", sys_rc);
+//             rc = 1;
+//         }
+//         remove(c_path);
+//     } else {
+//         printf("Generated: %s\n", c_path);
+//     }
+//
+//     free(c_code);
+//     free(src);
+//     return rc;
+// }
 
 static int check_file(const char *src_path) {
     char *src;
@@ -688,6 +745,7 @@ int main(int argc, char **argv) {
     const char *out = NULL;
     int no_runtime = 0;
 
+    const char *target = "js";
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
@@ -695,6 +753,15 @@ int main(int argc, char **argv) {
                 return 2;
             }
             out = argv[++i];
+//    -- This is a research artifact, not a supported target.
+//        } else if (strcmp(argv[i], "--target") == 0) {
+//            if (i + 1 >= argc) {
+//                fprintf(stderr, "swsc: --target requires an argument (js, c, native)\n");
+//                return 2;
+//            }
+//            target = argv[++i];
+//       } else if (strncmp(argv[i], "--target=", 9) == 0) {
+//            target = argv[i] + 9;
         } else if (strcmp(argv[i], "--no-runtime") == 0) {
             no_runtime = 1;
         } else {
@@ -712,26 +779,32 @@ int main(int argc, char **argv) {
     if (S_ISREG(st.st_mode)) {
         char derived[MAXPATH];
         if (!out) {
-            derive_js_path(src, derived, sizeof(derived));
+            if (strcmp(target, "js") == 0) {
+                derive_js_path(src, derived, sizeof(derived));
+//    -- This is a research artifact, not a supported target.
+//            } else if (strcmp(target, "native") == 0) {
+//                size_t n = strlen(src);
+//                snprintf(derived, sizeof(derived), "%s", src);
+//                if (n > 4 && strcmp(derived + n - 4, ".sws") == 0)
+//                    derived[n - 4] = '\0';
+//            } else {
+//                derive_js_path(src, derived, sizeof(derived));
+//                size_t n = strlen(derived);
+//                if (n > 3 && strcmp(derived + n - 3, ".js") == 0)
+//                    derived[n - 3] = '\0';
+//                strncat(derived, ".c", sizeof(derived) - strlen(derived) - 1);
+            }
             out = derived;
-        } else {
-            int out_is_dir = 0;
-            struct stat ost;
-            if (stat(out, &ost) == 0 && S_ISDIR(ost.st_mode)) out_is_dir = 1;
-            else {
-                size_t ol = strlen(out);
-                if (ol > 0 && out[ol - 1] == '/') out_is_dir = 1;
-            }
-            if (out_is_dir) {
-                const char *base = strrchr(src, '/');
-                base = base ? base + 1 : src;
-                char base_js[PATHBUF];
-                derive_js_path(base, base_js, sizeof(base_js));
-                snprintf(derived, sizeof(derived), "%s/%s", out, base_js);
-                out = derived;
-            }
         }
-        return compile_file(src, out, no_runtime) ? 1 : 0;
+        if (strcmp(target, "js") == 0)
+            return compile_file(src, out, no_runtime) ? 1 : 0;
+//    -- This is a research artifact, not a supported target.
+//        if (strcmp(target, "c") == 0)
+//            return compile_file_c(src, out, 0) ? 1 : 0;
+//        if (strcmp(target, "native") == 0)
+//            return compile_file_c(src, out, 1) ? 1 : 0;
+        fprintf(stderr, "swsc: unknown target '%s' (use js)\n", target);
+        return 2;
     }
 
     if (!S_ISDIR(st.st_mode)) {

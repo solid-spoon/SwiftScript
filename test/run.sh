@@ -5,13 +5,6 @@
 #   ./test/run.sh              run tests, compare with golden files
 #   ./test/run.sh --update     regenerate golden files from current output
 #   ./test/run.sh -u           same as --update
-#
-# Layout:
-#   test/swiftscript/*.sws         positive tests, expected stdout in
-#                                  test/golden/<name>.out
-#   test/swiftscript/neg/*.sws     negative tests, must fail check;
-#                                  expected substring of stderr in
-#                                  "// EXPECT_ERROR: ..." header comment
 
 set -euo pipefail
 
@@ -26,6 +19,8 @@ mkdir -p "$GOLDEN_DIR"
 UPDATE=0
 case "${1:-}" in
     -u|--update) UPDATE=1 ;;
+    "") : ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
 esac
 
 FAILED=0
@@ -111,7 +106,7 @@ run_negative() {
     PASSED=$((PASSED + 1))
 }
 
-# ── examples (pre-existing) ───────────────────────────────────────────
+# ── examples ──────────────────────────────────────────────────────────
 for f in examples/bank/bank.sws examples/todos/todo.sws; do
     [ -f "$f" ] && run_positive "$f"
 done

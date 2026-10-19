@@ -26,6 +26,7 @@ readonly SOURCES=(
     "$SRC/codegen.c"
     "$SRC/sourcemap.c"
     "$SRC/typecheck.c"
+#    "$SRC/codegen_c.c" -- This is a research artifact, not a supported target.
     "$SRC/main.c"
 )
 readonly HEADERS=(
@@ -37,6 +38,7 @@ readonly HEADERS=(
     "$SRC/runtime.h"
     "$SRC/sourcemap.h"
     "$SRC/typecheck.h"
+#    "$SRC/codegen_c.h"  -- This is a research artifact, not a supported target.
 )
 
 V="${V:-0}"
