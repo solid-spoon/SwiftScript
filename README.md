@@ -1,7 +1,5 @@
 # SwiftScript
 
-# SwiftScript
-
 [![CI](https://github.com/solid-spoon/SwiftScript/actions/workflows/ci.yml/badge.svg)](https://github.com/solid-spoon/SwiftScript/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/solid-spoon/SwiftScript?label=latest)](https://github.com/solid-spoon/SwiftScript/releases/latest)
 
