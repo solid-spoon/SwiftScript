@@ -279,7 +279,8 @@ cmd_build() {
     local -a user_cflags=() user_ldflags=()
     [[ -n "${CFLAGS:-}"  ]] && read -ra user_cflags  <<< "$CFLAGS"
     [[ -n "${LDFLAGS:-}" ]] && read -ra user_ldflags <<< "$LDFLAGS"
-    fl+=( "${user_cflags[@]}" "${user_ldflags[@]}" )
+    if [[ ${#user_cflags[@]} -gt 0 ]]; then fl+=( "${user_cflags[@]}" ); fi
+    if [[ ${#user_ldflags[@]} -gt 0 ]]; then fl+=( "${user_ldflags[@]}" ); fi
 
     # Apply WERROR=0 escape hatch last so it wins over -Werror.
     fl=( $(demote_werror "${fl[@]}") )

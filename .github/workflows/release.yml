@@ -43,8 +43,16 @@ jobs:
             make
             zip
 
-      - name: Build
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
         shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+        run: ./build.sh
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
         env:
           CC: ${{ matrix.cc }}
         run: ./build.sh
