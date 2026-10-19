@@ -122,8 +122,10 @@ flags_strict() {
         -Wimplicit-fallthrough
         -Wswitch-bool
         -Wno-unused-parameter
-        -Wno-newline-eof
     )
+    if "$CC_BIN" --version 2>/dev/null | grep -q "clang"; then
+        f+=( -Wno-newline-eof )
+    fi
     printf '%s\n' "${f[@]}"
 }
 

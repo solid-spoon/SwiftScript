@@ -45,6 +45,9 @@ typedef struct {
 
 static TCError _tc;
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 3, 4)))
+#endif
 static void tc_error(int line, int col, const char *fmt, ...) {
     if (_tc.has_err) return;
     _tc.line = line; _tc.col = col;

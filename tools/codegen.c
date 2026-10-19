@@ -24,6 +24,9 @@ typedef struct {
 
 static GenError _gen;
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 3, 4)))
+#endif
 static void codegen_error(int line, int col, const char *fmt, ...) {
     if (_gen.has_err) return;
     _gen.line = line; _gen.col = col;

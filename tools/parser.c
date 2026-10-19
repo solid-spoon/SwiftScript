@@ -56,6 +56,9 @@ typedef struct {
     int jb_top;
 } P;
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 4, 5)))
+#endif
 static void p_err(P *p, int line, int col, const char *fmt, ...) {
     p->err_line = line; p->err_col = col;
     va_list ap; va_start(ap, fmt);
@@ -364,7 +367,7 @@ static Node *parse_export(P *p) {
     int is_static = 0, is_async = 0;
     (void)parse_decl_modifiers(p, &is_static, &is_async);
 
-    Node *decl;
+    Node *decl = NULL;
     if (check_kw(p, "let") || check_kw(p, "var")) {
         decl = parse_let(p);
         decl->is_static = is_static;

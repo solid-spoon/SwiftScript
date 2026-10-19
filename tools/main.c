@@ -7,6 +7,9 @@
 #  ifndef _POSIX_C_SOURCE
 #    define _POSIX_C_SOURCE 200809L
 #  endif
+#  if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#    define _DARWIN_C_SOURCE
+#  endif
 #endif
 #include "util.h"
 #include "lexer.h"
@@ -39,6 +42,10 @@
 #include <io.h>
 #include <fcntl.h>
 #define mkdir(path, mode) _mkdir(path)
+#define lstat stat
+#ifndef S_ISLNK
+#define S_ISLNK(m) 0
+#endif
 #endif
 
 #define PATHBUF 4096
