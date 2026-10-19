@@ -1,5 +1,10 @@
 # SwiftScript
 
+# SwiftScript
+
+[![CI](https://github.com/solid-spoon/SwiftScript/actions/workflows/ci.yml/badge.svg)](https://github.com/solid-spoon/SwiftScript/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/solid-spoon/SwiftScript?include_prereleases&label=latest)](https://github.com/solid-spoon/SwiftScript/releases)
+
 **Swift-inspired syntax that compiles to JavaScript.**
 
 Write Swift-like code — `func`, `struct`, `class`, `enum`, `switch`, `if let` — and get plain ESM JavaScript out. No runtime library, no framework, no VM. Just a compiler.
