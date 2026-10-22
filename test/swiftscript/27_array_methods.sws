@@ -1,0 +1,7 @@
+var a = [1, 2, 3]
+a.append(4)
+a.prepend(0)
+print(a.count, a.isEmpty, a.first, a.last)
+print(a.removeLast())
+print(a.removeFirst())
+print(a.count)

@@ -1,0 +1,5 @@
+let f = { (_) in 42 }
+print(f(0))
+
+let g = { (a, _) in a }
+print(g(7, 0))

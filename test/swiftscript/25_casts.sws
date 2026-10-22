@@ -1,0 +1,4 @@
+let a: Any = 42
+print(a as! Int)
+print((a as? Int) != nil)
+print(((1 + 2) as! Int) == 3)

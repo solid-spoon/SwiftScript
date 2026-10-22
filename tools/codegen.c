@@ -965,7 +965,25 @@ static char *gen_struct(Node *n, Ctx *parent) {
             sb_put(&sb, fld->name);
         }
         sb_put(&sb, " };\n");
-    } else sb_put(&sb, "  const _self = {};\n");
+
+        Ctx fctx = ctx_copy(parent);
+        ss_free(&fctx.fields);
+        fctx.fields      = members;
+        fctx.self_prefix = "_self";
+        ss_free(&fctx.locals);
+        fctx.locals      = (SS){0};
+
+        for (int i = 0; i < n->fields->count; i++) {
+            Node *fld = n->fields->items[i];
+            if (fld->is_computed || !fld->a) continue;
+            char *v = gen_expr(fld->a, &fctx);
+            sb_printf(&sb,
+                "  if (_self.%s === undefined) _self.%s = %s;\n",
+                fld->name, fld->name, v);
+            free(v);
+        }
+        ctx_destroy_no_fields(&fctx);
+    } else {sb_put(&sb, "  const _self = {};\n");}
 
     for (int i = 0; i < n->methods->count; i++) {
         Node *m = n->methods->items[i];
@@ -1240,10 +1258,14 @@ static char *gen_expr(Node *n, Ctx *ctx) {
     }
     case N_UNARY: {
         char *a = gen_expr(n->a, ctx);
-        if (strcmp(n->op, "try?") == 0) sb_printf(&sb, "(() => { try { return %s; } catch { return null; } })()", a);
-        else if (strcmp(n->op, "try!") == 0) sb_printf(&sb, "(() => { try { return %s; } catch (e) { throw e; } })()", a);
-        else if (strcmp(n->op, "try") == 0) sb_printf(&sb, "(%s)", a);
-        else sb_printf(&sb, "(%s%s)", n->op ? n->op : "", a);
+        const char *op = n->op ? n->op : "";
+        if      (strcmp(op, "as")  == 0) sb_put(&sb, a);
+        else if (strcmp(op, "as!") == 0) sb_printf(&sb, "_force(%s)", a);
+        else if (strcmp(op, "as?") == 0) sb_printf(&sb, "((%s) ?? null)", a);
+        else if (strcmp(op, "try?") == 0) sb_printf(&sb, "(() => { try { return %s; } catch { return null; } })()", a);
+        else if (strcmp(op, "try!") == 0) sb_printf(&sb, "(() => { try { return %s; } catch (e) { throw e; } })()", a);
+        else if (strcmp(op, "try")  == 0) sb_printf(&sb, "(%s)", a);
+        else sb_printf(&sb, "(%s%s)", op, a);
         free(a); return sb_take(&sb);
     }
     case N_BIN: {
@@ -1282,6 +1304,26 @@ static char *gen_expr(Node *n, Ctx *ctx) {
 
 static char *gen_call(Node *n, Ctx *ctx) {
     if (!n->a) { codegen_error(n->line, n->col, "call with NULL callee"); return xstrdup("undefined"); }
+    /* Static .random on builtin numeric types. */
+    if (n->a->kind == N_MEMBER && n->a->a && n->a->a->kind == N_ID &&
+        n->a->a->name && n->a->name && strcmp(n->a->name, "random") == 0) {
+        const char *base = n->a->a->name;
+        const char *helper = NULL;
+        if      (strcmp(base, "Int")    == 0) helper = "_randomInt";
+        else if (strcmp(base, "Double") == 0) helper = "_randomDouble";
+        else if (strcmp(base, "Bool")   == 0) helper = "_randomBool";
+        if (helper) {
+            StrBuf sb; sb_init(&sb);
+            sb_printf(&sb, "%s(", helper);
+            for (int i = 0; i < n->args->count; i++) {
+                if (i) sb_put(&sb, ", ");
+                char *v = gen_expr(((Node*)n->args->items[i])->a, ctx);
+                sb_put(&sb, v); free(v);
+            }
+            sb_put(&sb, ")");
+            return sb_take(&sb);
+        }
+    }
     if (n->a->kind == N_MEMBER && n->a->a && n->a->a->kind == N_ID && n->a->a->name && strcmp(n->a->a->name, "super") == 0 && n->a->name && strcmp(n->a->name, "init") == 0) {
         StrBuf sb; sb_init(&sb); sb_put(&sb, "super(");
         for (int i = 0; i < n->args->count; i++) {

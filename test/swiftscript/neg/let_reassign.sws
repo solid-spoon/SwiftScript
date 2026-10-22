@@ -1,0 +1,3 @@
+// EXPECT_ERROR: Cannot assign to let constant 'x'
+let x = 1
+x = 2

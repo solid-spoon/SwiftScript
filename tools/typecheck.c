@@ -20,8 +20,9 @@ struct Type {
 typedef struct Symbol Symbol;
 struct Symbol {
     const char *name;
-    Type *type;
-    Symbol *next;
+    Type       *type;
+    int         mutable;   /* 1 for `var`, 0 for `let`, params, loop vars, methods */
+    Symbol     *next;
 };
 
 typedef struct Scope {
@@ -62,13 +63,13 @@ const char *tc_error_msg(void) { return _tc.msg; }
 int         tc_error_line(void){ return _tc.line; }
 int         tc_error_col(void) { return _tc.col; }
 
-static Type ty_int = { TY_INT, NULL, NULL };
-static Type ty_double = { TY_DOUBLE, NULL, NULL };
-static Type ty_string = { TY_STRING, NULL, NULL };
-static Type ty_bool = { TY_BOOL, NULL, NULL };
-static Type ty_nil = { TY_NIL, NULL, NULL };
-static Type ty_any = { TY_ANY, NULL, NULL };
-static Type ty_void = { TY_VOID, NULL, NULL };
+static Type ty_int     = { TY_INT,     NULL, NULL };
+static Type ty_double  = { TY_DOUBLE,  NULL, NULL };
+static Type ty_string  = { TY_STRING,  NULL, NULL };
+static Type ty_bool    = { TY_BOOL,    NULL, NULL };
+static Type ty_nil     = { TY_NIL,     NULL, NULL };
+static Type ty_any     = { TY_ANY,     NULL, NULL };
+static Type ty_void    = { TY_VOID,    NULL, NULL };
 static Type ty_unknown = { TY_UNKNOWN, NULL, NULL };
 
 static Type *type_new_array(Type *inner) {
@@ -95,21 +96,28 @@ static Scope *scope_new(Scope *parent) {
     return s;
 }
 
-static void scope_add(Scope *s, const char *name, Type *type) {
-    Symbol *sym = xmalloc(sizeof(Symbol));
-    sym->name = name;
-    sym->type = type;
-    sym->next = s->symbols;
-    s->symbols = sym;
+/* Single source of truth for inserting symbols. The `mutable` flag is
+ * what distinguishes `var x` (assignable) from `let x` (not). Methods,
+ * parameters, and loop bindings are all passed 0 to match Swift. */
+static void scope_add(Scope *s, const char *name, Type *type, int mutable) {
+    Symbol *sym  = xmalloc(sizeof(Symbol));
+    sym->name     = name;
+    sym->type     = type;
+    sym->mutable  = mutable;
+    sym->next     = s->symbols;
+    s->symbols    = sym;
+}
+
+static Symbol *scope_find_sym(Scope *s, const char *name) {
+    for (Scope *curr = s; curr; curr = curr->parent)
+        for (Symbol *sym = curr->symbols; sym; sym = sym->next)
+            if (strcmp(sym->name, name) == 0) return sym;
+    return NULL;
 }
 
 static Type *scope_find(Scope *s, const char *name) {
-    for (Scope *curr = s; curr; curr = curr->parent) {
-        for (Symbol *sym = curr->symbols; sym; sym = sym->next) {
-            if (strcmp(sym->name, name) == 0) return sym->type;
-        }
-    }
-    return NULL;
+    Symbol *sym = scope_find_sym(s, name);
+    return sym ? sym->type : NULL;
 }
 
 static void register_protocol(const char *name, Node *node) {
@@ -121,9 +129,8 @@ static void register_protocol(const char *name, Node *node) {
 }
 
 static Node *find_protocol(const char *name) {
-    for (ProtocolDef *p = _protocols; p; p = p->next) {
+    for (ProtocolDef *p = _protocols; p; p = p->next)
         if (strcmp(p->name, name) == 0) return p->node;
-    }
     return NULL;
 }
 
@@ -131,12 +138,12 @@ static Type *resolve_type(Node *n) {
     if (!n) return &ty_unknown;
     switch (n->kind) {
     case N_TYPE_NAMED:
-        if (strcmp(n->name, "Int") == 0) return &ty_int;
+        if (strcmp(n->name, "Int")    == 0) return &ty_int;
         if (strcmp(n->name, "Double") == 0) return &ty_double;
         if (strcmp(n->name, "String") == 0) return &ty_string;
-        if (strcmp(n->name, "Bool") == 0) return &ty_bool;
-        if (strcmp(n->name, "Any") == 0) return &ty_any;
-        if (strcmp(n->name, "Void") == 0) return &ty_void;
+        if (strcmp(n->name, "Bool")   == 0) return &ty_bool;
+        if (strcmp(n->name, "Any")    == 0) return &ty_any;
+        if (strcmp(n->name, "Void")   == 0) return &ty_void;
         return type_new_named(n->name);
     case N_TYPE_ARRAY:
         return type_new_array(resolve_type(n->a));
@@ -148,7 +155,8 @@ static Type *resolve_type(Node *n) {
 }
 
 static int is_assignable(Type *to, Type *from) {
-    if (to->kind == TY_ANY || from->kind == TY_ANY || to->kind == TY_UNKNOWN || from->kind == TY_UNKNOWN) return 1;
+    if (to->kind == TY_ANY || from->kind == TY_ANY ||
+        to->kind == TY_UNKNOWN || from->kind == TY_UNKNOWN) return 1;
     if (to->kind == TY_OPTIONAL) {
         if (from->kind == TY_NIL) return 1;
         return is_assignable(to->inner, from);
@@ -163,7 +171,7 @@ static int is_assignable(Type *to, Type *from) {
 static Type *check_expr(Node *n, Scope *scope);
 
 static Type *check_call(Node *n, Scope *scope) {
-    if (n->a->kind == N_ID) {
+    if (n->a && n->a->kind == N_ID && n->a->name) {
         Type *t = scope_find(scope, n->a->name);
         if (t && t->kind == TY_NAMED) return t;
     }
@@ -175,25 +183,36 @@ static Type *check_expr(Node *n, Scope *scope) {
     switch (n->kind) {
     case N_LIT:
         if (n->isnull) return &ty_nil;
-        if (n->sval) return &ty_string;
+        if (n->sval)   return &ty_string;
         if (n->is_bool) return &ty_bool;
         if (n->num == (long long)n->num) return &ty_int;
         return &ty_double;
+
     case N_ID: {
         Type *t = scope_find(scope, n->name);
         return t ? t : &ty_any;
     }
-    case N_BIN:
-        if (strcmp(n->op, "==") == 0 || strcmp(n->op, "!=") == 0 ||
-            strcmp(n->op, "<") == 0 || strcmp(n->op, ">") == 0 ||
-            strcmp(n->op, "<=") == 0 || strcmp(n->op, ">=") == 0 ||
-            strcmp(n->op, "&&") == 0 || strcmp(n->op, "||") == 0) {
+
+    case N_BIN: {
+        const char *op = n->op ? n->op : "";
+        if (!strcmp(op,"==") || !strcmp(op,"!=") || !strcmp(op,"<") || !strcmp(op,">") ||
+            !strcmp(op,"<=") || !strcmp(op,">=") || !strcmp(op,"&&") || !strcmp(op,"||")) {
             check_expr(n->a, scope); check_expr(n->b, scope);
             return &ty_bool;
         }
-        check_expr(n->a, scope); check_expr(n->b, scope);
+        Type *lt = check_expr(n->a, scope);
+        Type *rt = check_expr(n->b, scope);
+        if (!strcmp(op,"+") && (lt->kind == TY_STRING || rt->kind == TY_STRING))
+            return &ty_string;
+        if (lt->kind == TY_INT && rt->kind == TY_INT &&
+            (!strcmp(op,"+") || !strcmp(op,"-") || !strcmp(op,"*") ||
+             !strcmp(op,"/") || !strcmp(op,"%")))
+            return &ty_int;
         return &ty_double;
+    }
+
     case N_CALL: return check_call(n, scope);
+
     case N_ARRAY: {
         Type *elem_type = &ty_unknown;
         for (int i = 0; i < n->items->count; i++) {
@@ -202,11 +221,29 @@ static Type *check_expr(Node *n, Scope *scope) {
         }
         return type_new_array(elem_type);
     }
+
+    case N_ASSIGN: {
+        if (n->a && n->a->kind == N_ID && n->a->name) {
+            Symbol *sym = scope_find_sym(scope, n->a->name);
+            if (sym && !sym->mutable) {
+                tc_error(n->line, n->col,
+                         "Cannot assign to let constant '%s'", n->a->name);
+                return &ty_any;
+            }
+        }
+        Type *var = check_expr(n->a, scope);
+        Type *val = check_expr(n->b, scope);
+        if (!is_assignable(var, val))
+            tc_error(n->line, n->col, "Type mismatch in assignment");
+        return var;
+    }
+
     default: return &ty_any;
     }
 }
 
 static void check_stmt(Node *n, Scope *scope);
+
 static void check_block(List *stmts, Scope *scope) {
     for (int i = 0; i < stmts->count; i++) check_stmt(stmts->items[i], scope);
 }
@@ -214,52 +251,49 @@ static void check_block(List *stmts, Scope *scope) {
 static void check_stmt(Node *n, Scope *scope) {
     if (!n) return;
     switch (n->kind) {
+
     case N_LET: {
         Type *declared = resolve_type(n->type);
         if (n->a) {
             Type *val = check_expr(n->a, scope);
             if (n->type) {
                 if (!is_assignable(declared, val)) {
-                    tc_error(n->line, n->col, "Type mismatch: cannot assign value to declared type");
+                    tc_error(n->line, n->col,
+                             "Type mismatch: cannot assign value to declared type");
                 }
             } else {
                 declared = val;
             }
         }
-        
+
+        int mut = (n->sval && strcmp(n->sval, "var") == 0) ? 1 : 0;
         if (n->items && n->items->count > 0) {
-            for (int i = 0; i < n->items->count; i++) {
-                const char *name = (const char *)n->items->items[i];
-                scope_add(scope, name, &ty_any);
-            }
-        } else {
-            if (n->name) scope_add(scope, n->name, declared);
+            for (int i = 0; i < n->items->count; i++)
+                scope_add(scope, (const char*)n->items->items[i], &ty_any, mut);
+        } else if (n->name) {
+            scope_add(scope, n->name, declared, mut);
         }
         break;
     }
-    case N_ASSIGN: {
-        Type *var = check_expr(n->a, scope);
-        Type *val = check_expr(n->b, scope);
-        if (!is_assignable(var, val)) {
-            tc_error(n->line, n->col, "Type mismatch in assignment");
-        }
-        break;
-    }
+
     case N_FUNC: {
         Scope *func_scope = scope_new(scope);
         for (int i = 0; i < n->params->count; i++) {
             Node *p = n->params->items[i];
-            scope_add(func_scope, p->name, resolve_type(p->type));
+            /* Swift parameters are effectively `let` bindings. */
+            scope_add(func_scope, p->name, resolve_type(p->type), 0);
         }
         check_block(n->body, func_scope);
         break;
     }
+
     case N_IF: {
         check_expr(n->a, scope);
         check_block(n->b->stmts, scope_new(scope));
         if (n->c) check_stmt(n->c, scope_new(scope));
         break;
     }
+
     case N_GUARD_LET:
     case N_IF_LET: {
         Scope *inner = scope_new(scope);
@@ -268,67 +302,76 @@ static void check_stmt(Node *n, Scope *scope) {
             if (b->items && b->items->count > 0) {
                 for (int k = 0; k < b->items->count; k++) {
                     const char *name = (const char *)b->items->items[k];
-                    scope_add(inner, name, &ty_any);
+                    scope_add(inner, name, &ty_any, 0);
                 }
             } else if (b->name) {
-                scope_add(inner, b->name, &ty_any);
+                scope_add(inner, b->name, &ty_any, 0);
             }
         }
         if (n->b) check_stmt(n->b, inner);
         if (n->c) check_stmt(n->c, scope);
         break;
     }
+
     case N_FOR: {
         Scope *loop_scope = scope_new(scope);
         if (n->items && n->items->count > 0) {
             for (int i = 0; i < n->items->count; i++) {
                 const char *name = (const char *)n->items->items[i];
-                scope_add(loop_scope, name, &ty_any);
+                scope_add(loop_scope, name, &ty_any, 0);
             }
         } else if (n->name) {
-            scope_add(loop_scope, n->name, &ty_any);
+            scope_add(loop_scope, n->name, &ty_any, 0);
         }
         if (n->b) check_stmt(n->b, loop_scope);
         break;
     }
-    case N_RETURN: {
+
+    case N_RETURN:
         if (n->a) check_expr(n->a, scope);
         break;
-    }
-    case N_EXPR_STMT: 
-        if (n->a) check_expr(n->a, scope); 
+
+    case N_EXPR_STMT:
+        if (n->a) check_expr(n->a, scope);
         break;
+
     case N_BLOCK:
         check_block(n->stmts, scope_new(scope));
         break;
+
     case N_CLASS:
     case N_STRUCT: {
+        /* Protocol conformance checks (unchanged). */
         if (n->items && n->items->count > 0) {
             for (int i = 0; i < n->items->count; i++) {
-                Node *proto_ref = n->items->items[i];
+                Node *proto_ref  = n->items->items[i];
                 Node *proto_node = find_protocol(proto_ref->name);
                 if (!proto_node) {
-                    tc_error(n->line, n->col, "Cannot find protocol '%s' in scope", proto_ref->name);
+                    tc_error(n->line, n->col,
+                             "Cannot find protocol '%s' in scope", proto_ref->name);
                     continue;
                 }
-                
+
                 for (int j = 0; j < proto_node->methods->count; j++) {
                     Node *req = proto_node->methods->items[j];
                     int found = 0;
                     for (int k = 0; k < n->methods->count; k++) {
                         Node *impl = n->methods->items[k];
                         if (strcmp(req->name, impl->name) == 0) {
-                            Type *req_ret = resolve_type(req->retType);
+                            Type *req_ret  = resolve_type(req->retType);
                             Type *impl_ret = resolve_type(impl->retType);
                             if (!is_assignable(req_ret, impl_ret)) {
-                                tc_error(impl->line, impl->col, "Method '%s' return type does not match protocol '%s'", impl->name, proto_ref->name);
+                                tc_error(impl->line, impl->col,
+                                         "Method '%s' return type does not match protocol '%s'",
+                                         impl->name, proto_ref->name);
                             }
                             found = 1;
                             break;
                         }
                     }
                     if (!found) {
-                        tc_error(n->line, n->col, "Type '%s' does not conform to protocol '%s' (missing method '%s')", 
+                        tc_error(n->line, n->col,
+                                 "Type '%s' does not conform to protocol '%s' (missing method '%s')",
                                  n->name, proto_ref->name, req->name);
                     }
                 }
@@ -338,31 +381,32 @@ static void check_stmt(Node *n, Scope *scope) {
                     int found = 0;
                     for (int k = 0; k < n->fields->count; k++) {
                         Node *impl = n->fields->items[k];
-                        if (strcmp(req->name, impl->name) == 0) {
-                            found = 1;
-                            break;
-                        }
+                        if (strcmp(req->name, impl->name) == 0) { found = 1; break; }
                     }
                     if (!found) {
-                        tc_error(n->line, n->col, "Type '%s' does not conform to protocol '%s' (missing property '%s')", 
+                        tc_error(n->line, n->col,
+                                 "Type '%s' does not conform to protocol '%s' (missing property '%s')",
                                  n->name, proto_ref->name, req->name);
                     }
                 }
             }
         }
-        
+
         Scope *class_scope = scope_new(scope);
         for (int i = 0; i < n->fields->count; i++) {
             Node *fld = n->fields->items[i];
-            scope_add(class_scope, fld->name, resolve_type(fld->type));
+            int fld_mut = (fld->sval && strcmp(fld->sval, "var") == 0) ? 1 : 0;
+            scope_add(class_scope, fld->name, resolve_type(fld->type), fld_mut);
         }
         for (int i = 0; i < n->methods->count; i++) {
             Node *m = n->methods->items[i];
-            scope_add(class_scope, m->name, resolve_type(m->retType));
+            /* Methods are name-bindings, not mutable values. */
+            scope_add(class_scope, m->name, resolve_type(m->retType), 0);
             check_stmt(m, class_scope);
         }
         break;
     }
+
     default: break;
     }
 }
@@ -377,12 +421,12 @@ int typecheck_program(Node *prog) {
         Node *s = prog->stmts->items[i];
         if (s->kind == N_PROTOCOL) {
             register_protocol(s->name, s);
-            scope_add(global, s->name, type_new_named(s->name));
+            scope_add(global, s->name, type_new_named(s->name), 0);
         } else if (s->kind == N_FUNC) {
             Type *ret = resolve_type(s->retType);
-            scope_add(global, s->name, ret);
+            scope_add(global, s->name, ret, 0);
         } else if (s->kind == N_STRUCT || s->kind == N_CLASS) {
-            scope_add(global, s->name, type_new_named(s->name));
+            scope_add(global, s->name, type_new_named(s->name), 0);
         }
     }
 

@@ -1293,7 +1293,8 @@ static List *parse_args(P *p) {
     if (!check_op(p, ")")) {
         for (;;) {
             const char *name = NULL;
-            if (check_id_tok(p) && peek(p,1)->type == T_OP &&
+            if ((check_id_tok(p) || peek(p,0)->type == T_KW) &&
+                peek(p,1)->type == T_OP &&
                 peek(p,1)->value && strcmp(peek(p,1)->value, ":") == 0) {
                 name = xstrdup(next_tok(p)->value);
                 next_tok(p);
@@ -1620,6 +1621,28 @@ static Node *parse_expr_body(P *p, double min_prec, int no_trailing) {
     Node *left = parse_unary(p, no_trailing);
     while (1) {
         Token *t = peek(p, 0);
+
+        /* as / as! / as?
+         * Precedence 5.25: tighter than comparison (5.0), looser than
+         * range (5.5) and arithmetic (6+). Matches Swift's
+         * CastingPrecedence (132) sitting between Comparison (130)
+         * and RangeFormation (135).
+         * NOTE: `as` is T_KW, not T_OP — must be checked before the
+         * operator guard below. */
+        if (t->type == T_KW && t->value && strcmp(t->value, "as") == 0) {
+            if (5.25 < min_prec) break;
+            next_tok(p);
+            int mode = 0;                 /* 0 = as, 1 = as!, 2 = as? */
+            if      (match_op(p, "!")) mode = 1;
+            else if (match_op(p, "?")) mode = 2;
+            (void)parse_type(p);          /* type is erased at codegen */
+            Node *cast = node_new(N_UNARY, t->line, t->col);
+            cast->op = xstrdup(mode == 1 ? "as!" : (mode == 2 ? "as?" : "as"));
+            cast->a  = left;
+            left     = cast;
+            continue;
+        }
+
         if (t->type != T_OP || !t->value) break;
         double prec = get_prec(t->value);
         if (prec < 0 || prec < min_prec) break;
@@ -1699,8 +1722,15 @@ static Node *parse_closure(P *p) {
             List *ps = list_new();
             if (!check_op(p, ")")) {
                 for (;;) {
-                    match_underscore(p);
-                    Token *pid = expect_id(p);
+                    Token *pid;
+                    if (check_underscore(p) && peek(p, 1)->type == T_ID) {
+                        next_tok(p);
+                        pid = expect_id(p);
+                    } else if (check_underscore(p)) {
+                        pid = next_tok(p);
+                    } else {
+                        pid = expect_id(p);
+                    }
                     Node *pr = node_new(N_PARAM, pid->line, pid->col);
                     pr->name = xstrdup(pid->value);
                     if (match_op(p, ":")) pr->type = parse_type(p);

@@ -1,0 +1,11 @@
+struct Cell {
+    var isMine: Bool = false
+    var state: Int = 0
+    let tag: String = "cell"
+}
+
+let c1 = new Cell()
+print(c1.isMine, c1.state, c1.tag)
+
+let c2 = new Cell(isMine: true)
+print(c2.isMine, c2.state, c2.tag)
